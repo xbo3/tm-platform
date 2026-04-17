@@ -1,2 +1,4 @@
 -e node_modules
 tm.db
+tm.db-shm
+tm.db-wal
