@@ -1,4 +1,3 @@
 -e node_modules
-tm.db
-tm.db-shm
-tm.db-wal
+data.json
+tm.db*
