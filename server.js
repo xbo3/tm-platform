@@ -155,14 +155,84 @@ app.get('/api/customers',auth(['center_admin']),(req,res)=>{
   res.json(custs);
 });
 
-// ── Distribute ──
+// ── Phone Validation ──
+function validatePhone(num){
+  if(!num)return{valid:false,reason:'empty'};
+  const cleaned=String(num).replace(/[^0-9]/g,'');
+  if(cleaned.length<10||cleaned.length>11)return{valid:false,reason:'length'};
+  if(!['010','011','016','017','018','019'].some(p=>cleaned.startsWith(p)))return{valid:false,reason:'prefix'};
+  const f=cleaned.length===11?`${cleaned.slice(0,3)}-${cleaned.slice(3,7)}-${cleaned.slice(7)}`:`${cleaned.slice(0,3)}-${cleaned.slice(3,6)}-${cleaned.slice(6)}`;
+  return{valid:true,formatted:f};
+}
+function checkDuplicate(phone,cid){
+  const ex=DB.customers.find(c=>c.phone_number===phone&&c.center_id===cid);
+  if(!ex)return null;
+  const calls=DB.calls.filter(c=>c.customer_id===ex.id);
+  const list=DB.customer_lists.find(l=>l.id===ex.list_id);
+  return{list_title:list?.title||'',status:ex.status,no_answer_count:ex.no_answer_count,call_count:calls.length,connected:calls.filter(c=>c.result==='connected').length,invalid:ex.status==='invalid'};
+}
+
+// ── Upload DB with validation ──
+app.post('/api/lists/upload',auth(['center_admin']),(req,res)=>{
+  const{title,source,customers,is_test=0}=req.body;
+  if(!title||!customers||!Array.isArray(customers))return res.status(400).json({error:'title and customers array required'});
+  const cid=req.user.center_id;
+  const results={total:customers.length,valid:0,invalid_phone:0,duplicate:0,dup_details:[],inv_details:[]};
+  const valid=[];
+  for(const cu of customers){
+    const chk=validatePhone(cu.phone||cu.phone_number);
+    if(!chk.valid){results.invalid_phone++;results.inv_details.push({phone:cu.phone||cu.phone_number,reason:chk.reason});continue;}
+    const dup=checkDuplicate(chk.formatted,cid);
+    if(dup){results.duplicate++;results.dup_details.push({phone:chk.formatted,name:cu.name,prev_list:dup.list_title,prev_status:dup.status,was_invalid:dup.invalid,no_answer:dup.no_answer_count,calls:dup.call_count,connected:dup.connected});continue;}
+    results.valid++;
+    valid.push({name:cu.name||null,phone:chk.formatted,region:cu.region||null});
+  }
+  const lid=DB._nextId.customer_lists++;
+  DB.customer_lists.push({id:lid,center_id:cid,title,source:source||'',is_test,total_count:results.valid,uploaded_at:new Date().toISOString().split('T')[0]});
+  for(const v of valid){DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:null,name:v.name,phone_number:v.phone,region:v.region,status:'pending',no_answer_count:0,memo:''});}
+  const quality=results.total>0?Math.round((results.valid/results.total)*100):0;
+  const dupAnalysis={};
+  for(const d of results.dup_details){if(!dupAnalysis[d.prev_list])dupAnalysis[d.prev_list]={count:0,invalid:0,no_answer:0,connected:0};dupAnalysis[d.prev_list].count++;if(d.was_invalid)dupAnalysis[d.prev_list].invalid++;if(d.no_answer>0)dupAnalysis[d.prev_list].no_answer++;if(d.connected>0)dupAnalysis[d.prev_list].connected++;}
+  res.json({list_id:lid,...results,quality,dup_by_list:Object.entries(dupAnalysis).map(([list,data])=>({list,...data}))});
+});
+
+// ── Distribute (enhanced) ──
 app.post('/api/customers/distribute',auth(['center_admin']),(req,res)=>{
-  const{list_id,distribution}=req.body;
-  Object.entries(distribution).forEach(([agent,count])=>{
-    const pending=DB.customers.filter(c=>c.list_id===list_id&&!c.agent_name&&c.status==='pending').slice(0,count);
-    pending.forEach(c=>{c.agent_name=agent;});
-  });
-  res.json({ok:true});
+  const{list_id,mode,agents,percentage=100,specific=null}=req.body;
+  const cid=req.user.center_id;
+  const center=DB.centers.find(c=>c.id===cid);
+  const distMode=mode||center?.dist_mode||'auto';
+  const pending=DB.customers.filter(c=>c.list_id===list_id&&!c.agent_name&&c.status==='pending');
+  if(!pending.length)return res.json({ok:true,distributed:0,message:'No pending customers'});
+  const totalToDist=Math.ceil(pending.length*(percentage/100));
+  const pool=pending.slice(0,totalToDist);
+  const agentList=agents||DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active).map(u=>u.agent_name);
+  if(!agentList.length)return res.status(400).json({error:'No agents'});
+  const result={};agentList.forEach(a=>{result[a]=0;});
+  if(distMode==='manual'&&specific){
+    let idx=0;
+    for(const[agent,count]of Object.entries(specific)){if(!agentList.includes(agent))continue;for(let i=0;i<count&&idx<pool.length;i++,idx++){pool[idx].agent_name=agent;result[agent]++;}}
+  }else{
+    for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+    pool.forEach((c,i)=>{const a=agentList[i%agentList.length];c.agent_name=a;result[a]++;});
+  }
+  res.json({ok:true,distributed:pool.filter(c=>c.agent_name).length,per_agent:result,remaining:pending.length-totalToDist});
+});
+
+// ── Auto Refill ──
+app.post('/api/customers/refill',auth(['center_admin']),(req,res)=>{
+  const{agent,list_id,amount}=req.body;
+  const pool=DB.customers.filter(c=>c.list_id===list_id&&!c.agent_name&&c.status==='pending');
+  const toAssign=pool.slice(0,amount);
+  toAssign.forEach(c=>{c.agent_name=agent;});
+  res.json({ok:true,refilled:toAssign.length,remaining_pool:pool.length-toAssign.length});
+});
+
+// ── Queue Status ──
+app.get('/api/queue/status/:cid',auth(['center_admin']),(req,res)=>{
+  const cid=+req.params.cid;
+  const agents=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active);
+  res.json(agents.map(a=>{const p=DB.customers.filter(c=>c.center_id===cid&&c.agent_name===a.agent_name&&c.status==='pending').length;return{agent_name:a.agent_name,pending:p,low:p<50};}));
 });
 
 // ── Calls ──
