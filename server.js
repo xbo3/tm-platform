@@ -259,10 +259,56 @@ app.put('/api/calls/:id/end',auth(['agent']),(req,res)=>{
     if(result==='connected'){cust.status='done';if(memo)cust.memo=memo;}
     else if(result==='no_answer'){cust.no_answer_count=(cust.no_answer_count||0)+1;const center=DB.centers.find(c=>c.id===req.user.center_id);cust.status=(center?.auto_check_no_answer&&cust.no_answer_count>=center.no_answer_limit)?'no_answer':'pending';}
     else if(result==='invalid'){cust.status='invalid';}
+    else if(result==='signup'){cust.status='done';cust.result_detail='signup';if(memo)cust.memo=memo;}
+    else if(result==='interest'){cust.status='done';cust.result_detail='interest';if(memo)cust.memo=memo;}
+    else if(result==='callback'){cust.status='pending';cust.result_detail='callback';if(memo)cust.memo=memo;}
+    else if(result==='rejected'){cust.status='done';cust.result_detail='rejected';if(memo)cust.memo=memo;}
     else{cust.status='pending';}
   }
   const phone=DB.phones.find(p=>p.id===req.user.phone_id);if(phone)phone.status='idle';
   res.json({ok:true});
+});
+
+// ── Inbound Call Matching ──
+app.post('/api/calls/inbound',auth(['agent']),(req,res)=>{
+  const{phone_number}=req.body;
+  if(!phone_number)return res.status(400).json({error:'phone_number required'});
+  const cleaned=String(phone_number).replace(/[^0-9]/g,'');
+  const formatted=cleaned.length===11?`${cleaned.slice(0,3)}-${cleaned.slice(3,7)}-${cleaned.slice(7)}`:`${cleaned.slice(0,3)}-${cleaned.slice(3,6)}-${cleaned.slice(6)}`;
+  const cid=req.user.center_id;
+  // Find customer in any list for this center
+  const cust=DB.customers.find(c=>c.phone_number===formatted&&c.center_id===cid);
+  if(!cust)return res.json({matched:false,phone:formatted});
+  // Get call history for this customer
+  const calls=DB.calls.filter(c=>c.customer_id===cust.id).sort((a,b)=>new Date(b.started_at)-new Date(a.started_at));
+  const lastCall=calls[0];
+  const list=DB.customer_lists.find(l=>l.id===cust.list_id);
+  const center=DB.centers.find(c=>c.id===cid);
+  const maskedPhone=center&&!center.show_phone?cust.phone_number.replace(/(\d{3})-(\d{4})-(\d{4})/,'$1-****-$3'):cust.phone_number;
+  res.json({
+    matched:true,
+    customer:{id:cust.id,name:cust.name,phone:maskedPhone,phone_raw:cust.phone_number,region:cust.region||null,status:cust.status,no_answer_count:cust.no_answer_count,memo:cust.memo,agent_name:cust.agent_name,list_title:list?.title||''},
+    last_call:lastCall?{time:lastCall.started_at,result:lastCall.result,duration:lastCall.duration_sec,agent:lastCall.agent_name}:null,
+    call_count:calls.length,
+    days_since_last:lastCall?Math.floor((Date.now()-new Date(lastCall.started_at).getTime())/(1000*60*60*24)):null,
+  });
+});
+
+// ── Inbound Call End (update status from no_answer/pending to new result) ──
+app.put('/api/calls/inbound/:custId/end',auth(['agent']),(req,res)=>{
+  const cust=DB.customers.find(c=>c.id===+req.params.custId);
+  if(!cust)return res.status(404).json({error:'Customer not found'});
+  const{result,duration_sec,memo}=req.body;
+  // Record the call
+  const callId=DB._nextId.calls++;
+  DB.calls.push({id:callId,customer_id:cust.id,center_id:req.user.center_id,phone_id:req.user.phone_id,agent_name:req.user.agent_name,result,duration_sec:duration_sec||0,started_at:new Date().toISOString(),ended_at:new Date().toISOString(),is_inbound:true});
+  // Update customer status
+  const prev=cust.status;
+  if(result==='connected'||result==='signup'||result==='interest'){cust.status='done';cust.result_detail=result;}
+  else if(result==='callback'){cust.result_detail='callback';}
+  else if(result==='rejected'){cust.status='done';cust.result_detail='rejected';}
+  if(memo)cust.memo=memo;
+  res.json({ok:true,call_id:callId,prev_status:prev,new_status:cust.status});
 });
 
 // ── Stats ──
