@@ -320,6 +320,50 @@ app.get('/api/queue/status/:cid',auth(['center_admin']),(req,res)=>{
   res.json(agents.map(a=>{const p=DB.customers.filter(c=>c.center_id===cid&&c.agent_name===a.agent_name&&c.status==='pending').length;return{agent_name:a.agent_name,pending:p,low:p<50};}));
 });
 
+// ── Agent Endpoints ──
+app.get('/api/agent/me',auth(['agent']),(req,res)=>{
+  const cid=req.user.center_id;const an=req.user.agent_name;
+  const calls=DB.calls.filter(c=>c.agent_name===an&&c.center_id===cid);
+  const custs=DB.customers.filter(c=>c.agent_name===an&&c.center_id===cid);
+  const conn=calls.filter(c=>['connected','signup','interest'].includes(c.result));
+  res.json({
+    agent_name:an,name:req.user.name,
+    total_calls:calls.length,connected:conn.length,
+    signup:calls.filter(c=>c.result==='signup').length,
+    no_answer:calls.filter(c=>c.result==='no_answer').length,
+    invalid:calls.filter(c=>c.result==='invalid').length,
+    rejected:calls.filter(c=>c.result==='rejected').length,
+    callback:calls.filter(c=>c.result==='callback').length,
+    interest:calls.filter(c=>c.result==='interest').length,
+    talk_time:calls.reduce((a,c)=>a+(c.duration_sec||0),0),
+    pending:custs.filter(c=>c.status==='pending').length,
+  });
+});
+app.get('/api/agent/team',auth(['agent']),(req,res)=>{
+  const cid=req.user.center_id;
+  const center=DB.centers.find(c=>c.id===cid);
+  const agents=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active);
+  const showRanking=true; // TODO: from center settings
+  if(!showRanking)return res.json([]);
+  res.json(agents.map(u=>{
+    const calls=DB.calls.filter(c=>c.agent_name===u.agent_name&&c.center_id===cid);
+    const conn=calls.filter(c=>['connected','signup','interest'].includes(c.result));
+    return{agent_name:u.agent_name,name:u.name,total_calls:calls.length,connected:conn.length,signup:calls.filter(c=>c.result==='signup').length};
+  }).sort((a,b)=>b.total_calls-a.total_calls));
+});
+app.get('/api/agent/history',auth(['agent']),(req,res)=>{
+  const cid=req.user.center_id;const an=req.user.agent_name;
+  const calls=DB.calls.filter(c=>c.agent_name===an&&c.center_id===cid).sort((a,b)=>new Date(b.started_at)-new Date(a.started_at)).slice(0,50);
+  const result=calls.map(c=>{
+    const cust=DB.customers.find(x=>x.id===c.customer_id);
+    const center=DB.centers.find(x=>x.id===cid);
+    const phone=cust?cust.phone_number:'';
+    const masked=center&&!center.show_phone&&phone?phone.replace(/(\d{3})-(\d{4})-(\d{4})/,'$1-****-$3'):phone;
+    return{id:c.id,name:cust?.name||null,phone:masked,result:c.result,duration:c.duration_sec||0,time:c.started_at,is_inbound:c.is_inbound||false};
+  });
+  res.json(result);
+});
+
 // ── Calls ──
 app.post('/api/calls/next',auth(['agent']),(req,res)=>{
   const cid=req.user.center_id;const an=req.user.agent_name;
