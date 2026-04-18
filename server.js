@@ -116,13 +116,24 @@ app.get('/api/dashboard/:cid',auth(['center_admin','super_admin']),(req,res)=>{
     const phone=DB.phones.find(p=>p.id===u.phone_id);
     const calls=DB.calls.filter(c=>c.agent_name===u.agent_name&&c.center_id===cid);
     const custs=DB.customers.filter(c=>c.agent_name===u.agent_name&&c.center_id===cid);
+    const connCalls=calls.filter(c=>c.result==='connected'||c.result==='signup'||c.result==='interest');
+    const avgConn=connCalls.length>0?Math.round(connCalls.reduce((a,c)=>a+(c.duration_sec||0),0)/connCalls.length):0;
+    // Hourly breakdown
+    const hourly=Array.from({length:24},(_,h)=>calls.filter(c=>(c.hour||0)===h).length);
     return{
-      agent_name:u.agent_name,phone_id:u.phone_id,sip_account:phone?.sip_account,status:phone?.status||'idle',
-      total_calls:calls.length,connected:calls.filter(c=>c.result==='connected').length,
-      no_answer:calls.filter(c=>c.result==='no_answer').length,invalid_count:calls.filter(c=>c.result==='invalid').length,
+      agent_name:u.agent_name,name:u.name,phone_id:u.phone_id,sip_account:phone?.sip_account,status:phone?.status||'idle',
+      total_calls:calls.length,
+      connected:connCalls.length,
+      signup:calls.filter(c=>c.result==='signup').length,
+      interest:calls.filter(c=>c.result==='interest').length,
+      rejected:calls.filter(c=>c.result==='rejected').length,
+      no_answer:calls.filter(c=>c.result==='no_answer').length,
+      invalid_count:calls.filter(c=>c.result==='invalid').length,
+      callback:calls.filter(c=>c.result==='callback').length,
       talk_time:calls.reduce((a,c)=>a+(c.duration_sec||0),0),
+      avg_conn_sec:avgConn,
       pending:custs.filter(c=>c.status==='pending').length,
-      na1:custs.filter(c=>c.no_answer_count===1).length,na2:custs.filter(c=>c.no_answer_count===2).length,na3:custs.filter(c=>c.no_answer_count>=3).length,
+      hourly,
     };
   });
   const lists=DB.customer_lists.filter(l=>l.center_id===cid).map(l=>{
@@ -132,7 +143,16 @@ app.get('/api/dashboard/:cid',auth(['center_admin','super_admin']),(req,res)=>{
     const inv=custs.filter(c=>c.status==='invalid').length;
     return{...l,total:custs.length,used,done_count:done,invalid_count:inv,na_count:custs.filter(c=>c.status==='no_answer').length,remaining:custs.filter(c=>c.status==='pending').length,connect_rate:used>0?((done/used)*100).toFixed(1):'0.0',invalid_rate:used>0?((inv/used)*100).toFixed(1):'0.0'};
   });
-  res.json({center,agents:agentData,lists,hourly:[]});
+  // Active test
+  const activeTests=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test===1).map(l=>{
+    const custs=DB.customers.filter(c=>c.list_id===l.id);
+    const tcalls=DB.calls.filter(c=>custs.some(cu=>cu.id===c.customer_id));
+    return{list_id:l.id,title:l.title,total:custs.length,done:custs.filter(c=>c.status!=='pending'&&c.status!=='calling').length,
+      connected:tcalls.filter(c=>c.result==='connected'||c.result==='signup').length,
+      no_answer:tcalls.filter(c=>c.result==='no_answer').length,
+      invalid:tcalls.filter(c=>c.result==='invalid').length};
+  });
+  res.json({center,agents:agentData,lists,active_tests:activeTests});
 });
 
 // ── Lists ──
@@ -302,17 +322,28 @@ app.get('/api/queue/status/:cid',auth(['center_admin']),(req,res)=>{
 
 // ── Calls ──
 app.post('/api/calls/next',auth(['agent']),(req,res)=>{
-  const c=DB.customers.find(x=>x.center_id===req.user.center_id&&x.agent_name===req.user.agent_name&&x.status==='pending');
+  const cid=req.user.center_id;const an=req.user.agent_name;
+  // Priority 1: Test DB customers first
+  const testLists=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test);
+  let c=null;
+  if(testLists.length){
+    const testIds=testLists.map(l=>l.id);
+    c=DB.customers.find(x=>x.center_id===cid&&x.agent_name===an&&x.status==='pending'&&testIds.includes(x.list_id));
+  }
+  // Priority 2: Normal DB customers
+  if(!c)c=DB.customers.find(x=>x.center_id===cid&&x.agent_name===an&&x.status==='pending');
   if(!c)return res.status(404).json({error:'No more customers'});
   c.status='calling';
-  const center=DB.centers.find(x=>x.id===req.user.center_id);
-  const masked={...c};
+  const center=DB.centers.find(x=>x.id===cid);
+  const list=DB.customer_lists.find(l=>l.id===c.list_id);
+  const masked={...c,is_test:list?.is_test||0};
   if(center&&!center.show_phone)masked.phone_number=c.phone_number.replace(/(\d{3})-(\d{4})-(\d{4})/,'$1-****-$3');
   res.json(masked);
 });
 app.post('/api/calls/start',auth(['agent']),(req,res)=>{
   const id=DB._nextId.calls++;
-  DB.calls.push({id,customer_id:req.body.customer_id,center_id:req.user.center_id,phone_id:req.user.phone_id,agent_name:req.user.agent_name,result:null,duration_sec:0,started_at:new Date().toISOString()});
+  const hour=new Date().getHours();
+  DB.calls.push({id,customer_id:req.body.customer_id,center_id:req.user.center_id,phone_id:req.user.phone_id,agent_name:req.user.agent_name,result:null,duration_sec:0,started_at:new Date().toISOString(),hour});
   res.json({call_id:id});
 });
 app.put('/api/calls/:id/end',auth(['agent']),(req,res)=>{
@@ -385,19 +416,82 @@ app.get('/api/stats/:cid',auth(['center_admin','super_admin']),(req,res)=>{
 // ── Recordings ──
 app.get('/api/recordings/:cid',auth(['center_admin']),(req,res)=>{res.json([]);});
 
-// ── Test ──
+// ── Sample Test ──
 app.post('/api/test/start',auth(['center_admin']),(req,res)=>{
-  const cid=req.user.center_id;const lid=DB._nextId.customer_lists++;
-  DB.customer_lists.push({id:lid,center_id:cid,title:'Test 100건',source:'Test',is_test:1,total_count:100,uploaded_at:new Date().toISOString().split('T')[0]});
-  const ags=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid).map(u=>u.agent_name);
-  for(let i=0;i<100;i++){DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:ags[i%ags.length],name:`테스트${i+1}`,phone_number:`010-0000-${String(i).padStart(4,'0')}`,status:'pending',no_answer_count:0,memo:''});}
-  res.json({list_id:lid});
+  const cid=req.user.center_id;
+  const{title,customers}=req.body;
+  const lid=DB._nextId.customer_lists++;
+  const t=title||'샘플테스트';
+  const ags=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active).map(u=>u.agent_name);
+  
+  if(customers&&Array.isArray(customers)){
+    // Upload custom test data
+    const valid=[];
+    for(const cu of customers){
+      const chk=validatePhone(cu.phone||cu.phone_number);
+      if(chk.valid)valid.push({name:cu.name||null,phone:chk.formatted});
+    }
+    DB.customer_lists.push({id:lid,center_id:cid,title:t,source:'Sample',is_test:1,total_count:valid.length,uploaded_at:new Date().toISOString().split('T')[0]});
+    valid.forEach((v,i)=>{DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:ags[i%ags.length],name:v.name,phone_number:v.phone,status:'pending',no_answer_count:0,memo:''});});
+    res.json({list_id:lid,total:valid.length,per_agent:Math.ceil(valid.length/ags.length),agents:ags});
+  }else{
+    // Default 100 test
+    DB.customer_lists.push({id:lid,center_id:cid,title:t,source:'Test',is_test:1,total_count:100,uploaded_at:new Date().toISOString().split('T')[0]});
+    for(let i=0;i<100;i++){DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:ags[i%ags.length],name:'Test'+(i+1),phone_number:'010-'+String(2000+Math.floor(i/100)).padStart(4,'0')+'-'+String(i).padStart(4,'0'),status:'pending',no_answer_count:0,memo:''});}
+    res.json({list_id:lid,total:100,per_agent:20,agents:ags});
+  }
+});
+// Sample test with file upload
+app.post('/api/test/upload-file',auth(['center_admin']),upload.single('file'),(req,res)=>{
+  if(!req.file)return res.status(400).json({error:'No file'});
+  const{title}=req.body;
+  let rows=[];
+  try{const wb=XLSX.read(req.file.buffer,{type:'buffer',codepage:65001,raw:true});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'',raw:false});}
+  catch(e){return res.status(400).json({error:'Parse failed'});}
+  const cols=Object.keys(rows[0]||{});
+  const phoneCol=cols.find(c=>{try{return/phone|전화|번호|핸드폰|mobile|tel|연락처|hp|휴대/i.test(c)}catch{return false}})||cols[0];
+  const nameCol=cols.find(c=>{try{return/name|이름|성명|고객명/i.test(c)}catch{return false}})||null;
+  const customers=rows.map(r=>({phone:String(r[phoneCol]||''),name:nameCol?String(r[nameCol]||''):null}));
+  // Forward to test/start logic
+  req.body={title:title||'샘플테스트',customers};
+  const cid=req.user.center_id;
+  const ags=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active).map(u=>u.agent_name);
+  const valid=[];
+  for(const cu of customers){const chk=validatePhone(cu.phone);if(chk.valid)valid.push({name:cu.name,phone:chk.formatted});}
+  const lid=DB._nextId.customer_lists++;
+  DB.customer_lists.push({id:lid,center_id:cid,title:title||'샘플테스트',source:'Sample',is_test:1,total_count:valid.length,uploaded_at:new Date().toISOString().split('T')[0]});
+  valid.forEach((v,i)=>{DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:ags[i%ags.length],name:v.name,phone_number:v.phone,status:'pending',no_answer_count:0,memo:''});});
+  res.json({list_id:lid,total:valid.length,per_agent:Math.ceil(valid.length/ags.length)});
 });
 app.post('/api/test/stop',auth(['center_admin']),(req,res)=>{
-  const testLists=DB.customer_lists.filter(l=>l.center_id===req.user.center_id&&l.is_test);
-  testLists.forEach(l=>{DB.customers=DB.customers.filter(c=>c.list_id!==l.id);DB.calls=DB.calls.filter(c=>!DB.customers.find(x=>x.id===c.customer_id&&x.list_id===l.id));});
-  DB.customer_lists=DB.customer_lists.filter(l=>!(l.center_id===req.user.center_id&&l.is_test));
-  res.json({ok:true});
+  const cid=req.user.center_id;
+  const testLists=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test);
+  const results=testLists.map(l=>{
+    const custs=DB.customers.filter(c=>c.list_id===l.id);
+    const calls=DB.calls.filter(c=>custs.some(cu=>cu.id===c.customer_id));
+    return{list_id:l.id,title:l.title,total:custs.length,called:custs.filter(c=>c.status!=='pending').length,
+      connected:calls.filter(c=>c.result==='connected'||c.result==='signup').length,
+      no_answer:calls.filter(c=>c.result==='no_answer').length,
+      invalid:calls.filter(c=>c.result==='invalid').length,
+      signup:calls.filter(c=>c.result==='signup').length};
+  });
+  // Keep results but mark test as done
+  testLists.forEach(l=>{l.is_test=2;}); // 2 = completed test
+  res.json({ok:true,results});
+});
+app.get('/api/test/status/:cid',auth(['center_admin']),(req,res)=>{
+  const cid=+req.params.cid;
+  const testLists=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test===1);
+  res.json(testLists.map(l=>{
+    const custs=DB.customers.filter(c=>c.list_id===l.id);
+    const calls=DB.calls.filter(c=>custs.some(cu=>cu.id===c.customer_id));
+    const done=custs.filter(c=>c.status!=='pending'&&c.status!=='calling').length;
+    return{list_id:l.id,title:l.title,total:custs.length,done,remaining:custs.filter(c=>c.status==='pending').length,
+      connected:calls.filter(c=>c.result==='connected'||c.result==='signup').length,
+      no_answer:calls.filter(c=>c.result==='no_answer').length,
+      invalid:calls.filter(c=>c.result==='invalid').length,
+      progress:custs.length>0?Math.round((done/custs.length)*100):0};
+  }));
 });
 
 // ── Static ──
