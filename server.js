@@ -7,6 +7,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
+import multer from 'multer';
+import XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -194,6 +196,64 @@ app.post('/api/lists/upload',auth(['center_admin']),(req,res)=>{
   const dupAnalysis={};
   for(const d of results.dup_details){if(!dupAnalysis[d.prev_list])dupAnalysis[d.prev_list]={count:0,invalid:0,no_answer:0,connected:0};dupAnalysis[d.prev_list].count++;if(d.was_invalid)dupAnalysis[d.prev_list].invalid++;if(d.no_answer>0)dupAnalysis[d.prev_list].no_answer++;if(d.connected>0)dupAnalysis[d.prev_list].connected++;}
   res.json({list_id:lid,...results,quality,dup_by_list:Object.entries(dupAnalysis).map(([list,data])=>({list,...data}))});
+});
+
+// ── Excel/CSV Upload ──
+const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024},fileFilter:(req,file,cb)=>{
+  const ext=file.originalname.toLowerCase();
+  if(ext.endsWith('.xlsx')||ext.endsWith('.xls')||ext.endsWith('.csv'))cb(null,true);
+  else cb(new Error('xlsx, xls, csv only'));
+}});
+
+app.post('/api/lists/upload-file',auth(['center_admin']),upload.single('file'),(req,res)=>{
+  if(!req.file)return res.status(400).json({error:'No file uploaded'});
+  const{title,source,is_test=0}=req.body;
+  if(!title)return res.status(400).json({error:'title required'});
+
+  // Parse Excel
+  let rows=[];
+  try{
+    const wb=XLSX.read(req.file.buffer,{type:'buffer'});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+  }catch(e){return res.status(400).json({error:'Failed to parse file: '+e.message});}
+
+  if(!rows.length)return res.status(400).json({error:'Empty file'});
+
+  // Auto-detect columns
+  const cols=Object.keys(rows[0]);
+  const phoneCol=cols.find(c=>/phone|전화|번호|핸드폰|mobile|tel|연락처|hp/i.test(c))||cols.find(c=>{
+    const v=String(rows[0][c]).replace(/[^0-9]/g,'');return v.length>=10&&v.startsWith('01');
+  })||cols[0];
+  const nameCol=cols.find(c=>/name|이름|성명|고객명/i.test(c))||null;
+  const regionCol=cols.find(c=>/region|지역|주소|address|시도/i.test(c))||null;
+
+  // Convert to customers array
+  const customers=rows.map(r=>({
+    phone:String(r[phoneCol]||'').trim(),
+    name:nameCol?String(r[nameCol]||'').trim():null,
+    region:regionCol?String(r[regionCol]||'').trim():null,
+  }));
+
+  // Run through same validation
+  const cid=req.user.center_id;
+  const results={total:customers.length,valid:0,invalid_phone:0,duplicate:0,dup_details:[],inv_details:[]};
+  const valid=[];
+  for(const cu of customers){
+    const chk=validatePhone(cu.phone);
+    if(!chk.valid){results.invalid_phone++;results.inv_details.push({phone:cu.phone,reason:chk.reason});continue;}
+    const dup=checkDuplicate(chk.formatted,cid);
+    if(dup){results.duplicate++;results.dup_details.push({phone:chk.formatted,name:cu.name,prev_list:dup.list_title,prev_status:dup.status,was_invalid:dup.invalid,no_answer:dup.no_answer_count,calls:dup.call_count,connected:dup.connected});continue;}
+    results.valid++;
+    valid.push({name:cu.name,phone:chk.formatted,region:cu.region});
+  }
+  const lid=DB._nextId.customer_lists++;
+  DB.customer_lists.push({id:lid,center_id:cid,title,source:source||'',is_test:+is_test,total_count:results.valid,uploaded_at:new Date().toISOString().split('T')[0]});
+  for(const v of valid){DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:null,name:v.name,phone_number:v.phone,region:v.region,status:'pending',no_answer_count:0,memo:''});}
+  const quality=results.total>0?Math.round((results.valid/results.total)*100):0;
+  const dupAnalysis={};
+  for(const d of results.dup_details){if(!dupAnalysis[d.prev_list])dupAnalysis[d.prev_list]={count:0,invalid:0,no_answer:0,connected:0};dupAnalysis[d.prev_list].count++;if(d.was_invalid)dupAnalysis[d.prev_list].invalid++;if(d.no_answer>0)dupAnalysis[d.prev_list].no_answer++;if(d.connected>0)dupAnalysis[d.prev_list].connected++;}
+  res.json({list_id:lid,...results,quality,detected_columns:{phone:phoneCol,name:nameCol,region:regionCol,all:cols},dup_by_list:Object.entries(dupAnalysis).map(([list,data])=>({list,...data}))});
 });
 
 // ── Distribute (enhanced) ──
