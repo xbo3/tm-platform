@@ -18,14 +18,19 @@ const ICONS = {
 
 const AGENTS = [
   { id: "D", name: "최유나", calls: 221, connected: 61, absent: 98, invalid: 24, rejected: 38, talkSec: 7080, idleSec: 2340, queue: 24, avgInterval: 18, signup: 8,
+    interest: 15, callback: 6, connCallback: 4, avgConnSec: 55, shortCalls: 3, longCalls: 18,
     hourly: [0, 0, 22, 28, 30, 26, 24, 20, 18, 25, 16, 12] },
   { id: "B", name: "이서연", calls: 203, connected: 58, absent: 89, invalid: 20, rejected: 36, talkSec: 6120, idleSec: 3180, queue: 89, avgInterval: 22, signup: 6,
+    interest: 12, callback: 5, connCallback: 3, avgConnSec: 48, shortCalls: 5, longCalls: 14,
     hourly: [0, 0, 18, 25, 28, 24, 22, 18, 16, 22, 18, 12] },
   { id: "A", name: "김민수", calls: 187, connected: 42, absent: 85, invalid: 22, rejected: 38, talkSec: 4560, idleSec: 4020, queue: 312, avgInterval: 31, signup: 4,
+    interest: 8, callback: 4, connCallback: 2, avgConnSec: 32, shortCalls: 12, longCalls: 6,
     hourly: [0, 26, 24, 20, 18, 14, 16, 18, 20, 17, 14, 0] },
   { id: "E", name: "정태우", calls: 172, connected: 39, absent: 78, invalid: 21, rejected: 34, talkSec: 4020, idleSec: 4560, queue: 198, avgInterval: 35, signup: 3,
+    interest: 6, callback: 3, connCallback: 1, avgConnSec: 28, shortCalls: 14, longCalls: 4,
     hourly: [0, 0, 14, 20, 22, 20, 16, 14, 18, 20, 16, 12] },
   { id: "C", name: "박지훈", calls: 156, connected: 31, absent: 72, invalid: 25, rejected: 28, talkSec: 2580, idleSec: 5820, queue: 401, avgInterval: 48, signup: 2,
+    interest: 4, callback: 2, connCallback: 0, avgConnSec: 19, shortCalls: 18, longCalls: 2,
     hourly: [0, 0, 12, 18, 22, 16, 10, 12, 16, 20, 18, 12] },
 ];
 
@@ -171,29 +176,80 @@ function CoachCard({ agent, expanded, onToggle }) {
       </div>
       {expanded && (
         <div style={{ padding: "14px 16px", background: "#060606", borderBottom: `1px solid ${T.border}`, animation: "su 0.25s ease" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "180px 1fr 1fr", gap: 14 }}>
+            {/* Left: Work Pattern */}
             <div>
               <div style={{ fontSize: 8, color: T.muted, letterSpacing: "0.08em", marginBottom: 10 }}>WORK PATTERN</div>
-              <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
-                <Ring pct={talkP} color={T.cyan} size={50} stroke={3}><span style={{ fontSize: 12, fontWeight: 200, color: T.cyan }}>{talkP}%</span></Ring>
-                <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 4 }}>
-                  <div style={{ fontSize: 10, fontWeight: 300 }}><span style={{ color: T.blue }}>{fmtM(agent.talkSec)}</span> <span style={{ color: T.muted, fontSize: 8 }}>TALK</span></div>
-                  <div style={{ fontSize: 10, fontWeight: 300 }}><span style={{ color: agent.idleSec > agent.talkSec ? T.red : T.dim }}>{fmtM(agent.idleSec)}</span> <span style={{ color: T.muted, fontSize: 8 }}>IDLE</span></div>
+              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                <Ring pct={talkP} color={T.cyan} size={46} stroke={3}><span style={{ fontSize: 11, fontWeight: 200, color: T.cyan }}>{talkP}%</span></Ring>
+                <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3 }}>
+                  <div style={{ fontSize: 10, fontWeight: 300 }}><span style={{ color: T.blue }}>{fmtM(agent.talkSec)}</span> <span style={{ color: T.muted, fontSize: 7 }}>TALK</span></div>
+                  <div style={{ fontSize: 10, fontWeight: 300 }}><span style={{ color: agent.idleSec > agent.talkSec ? T.red : T.dim }}>{fmtM(agent.idleSec)}</span> <span style={{ color: T.muted, fontSize: 7 }}>IDLE</span></div>
                 </div>
               </div>
               <div style={{ fontSize: 8, color: T.muted, letterSpacing: "0.08em", marginBottom: 6 }}>HOURLY</div>
-              <MiniBar data={activeHours.map(h => agent.hourly[h])} color={T.cyan} w={180} h={28} />
+              <MiniBar data={activeHours.map(h => agent.hourly[h])} color={T.cyan} w={160} h={24} />
               {!isBest && (
-                <div style={{ marginTop: 12, padding: "8px 10px", borderRadius: 6, background: "#0a0a0a", border: `1px solid ${T.border}` }}>
-                  <div style={{ fontSize: 7, color: T.muted, letterSpacing: "0.08em", marginBottom: 4 }}>VS 1위</div>
-                  <div style={{ fontSize: 10, fontWeight: 300 }}>
-                    <span style={{ color: T.dim }}>콜 </span><span style={{ color: T.red }}>-{gapCalls}</span>
-                    <span style={{ color: T.dim, marginLeft: 8 }}>간격 </span><span style={{ color: T.red }}>+{gapInterval}초</span>
-                    <span style={{ color: T.dim, marginLeft: 8 }}>연결률 </span><span style={{ color: parseFloat(gapRate) < 0 ? T.red : T.green }}>{gapRate}%p</span>
-                  </div>
+                <div style={{ marginTop: 10, padding: "6px 8px", borderRadius: 6, background: "#0a0a0a", border: `1px solid ${T.border}`, fontSize: 10, fontWeight: 300 }}>
+                  <div style={{ fontSize: 7, color: T.muted, letterSpacing: "0.06em", marginBottom: 3 }}>VS 1위</div>
+                  <span style={{ color: T.dim }}>콜 </span><span style={{ color: T.red }}>-{gapCalls}</span>
+                  <span style={{ color: T.dim, marginLeft: 6 }}>간격 </span><span style={{ color: T.red }}>+{gapInterval}초</span>
+                  <span style={{ color: T.dim, marginLeft: 6 }}>연결률 </span><span style={{ color: parseFloat(gapRate) < 0 ? T.red : T.green }}>{gapRate}%p</span>
                 </div>
               )}
             </div>
+
+            {/* Middle: Connected Call Analysis */}
+            <div>
+              <div style={{ fontSize: 8, color: T.green, letterSpacing: "0.08em", marginBottom: 10, fontWeight: 500 }}>CONNECTED CALL ANALYSIS</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6, marginBottom: 10 }}>
+                {[
+                  { label: "평균 통화", val: agent.avgConnSec + "s", color: agent.avgConnSec > 40 ? T.green : agent.avgConnSec > 25 ? T.yellow : T.red },
+                  { label: "전환율", val: ((agent.signup / (agent.connected || 1)) * 100).toFixed(1) + "%", color: agent.signup / (agent.connected || 1) > 0.1 ? T.green : T.orange },
+                  { label: "관심률", val: (((agent.interest + agent.signup) / (agent.connected || 1)) * 100).toFixed(0) + "%", color: T.blue },
+                ].map((s, i) => (
+                  <div key={i} style={{ textAlign: "center", padding: "8px 4px", borderRadius: 6, background: "#0a0a0a", border: `1px solid ${T.border}` }}>
+                    <div style={{ fontSize: 15, fontWeight: 200, color: s.color }}>{s.val}</div>
+                    <div style={{ fontSize: 7, color: T.muted, marginTop: 2 }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+              {/* Connected result breakdown */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+                {[
+                  { label: "가입", val: agent.signup, color: T.purple },
+                  { label: "관심", val: agent.interest, color: T.blue },
+                  { label: "거절", val: agent.rejected, color: T.orange },
+                  { label: "콜백", val: agent.callback, color: T.cyan },
+                ].map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <Led color={r.color} size={4} />
+                    <span style={{ fontSize: 9, color: T.dim, width: 26 }}>{r.label}</span>
+                    <div style={{ flex: 1, height: 4, borderRadius: 2, background: "#111", overflow: "hidden" }}>
+                      <div style={{ width: `${(r.val / (agent.connected || 1)) * 100}%`, height: "100%", background: r.color, borderRadius: 2 }} />
+                    </div>
+                    <span style={{ fontSize: 10, fontWeight: 200, color: r.color, width: 22, textAlign: "right" }}>{r.val}</span>
+                  </div>
+                ))}
+              </div>
+              {/* Call quality indicators */}
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1, padding: "6px 8px", borderRadius: 6, background: "#0a0a0a", border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 7, color: T.muted, marginBottom: 2 }}>SHORT (&lt;15s)</div>
+                  <div style={{ fontSize: 13, fontWeight: 200, color: agent.shortCalls > 10 ? T.red : T.dim }}>{agent.shortCalls}</div>
+                </div>
+                <div style={{ flex: 1, padding: "6px 8px", borderRadius: 6, background: "#0a0a0a", border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 7, color: T.muted, marginBottom: 2 }}>LONG (&gt;60s)</div>
+                  <div style={{ fontSize: 13, fontWeight: 200, color: T.green }}>{agent.longCalls}</div>
+                </div>
+                <div style={{ flex: 1, padding: "6px 8px", borderRadius: 6, background: "#0a0a0a", border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 7, color: T.muted, marginBottom: 2 }}>콜백 재연결</div>
+                  <div style={{ fontSize: 13, fontWeight: 200, color: agent.connCallback > 0 ? T.cyan : T.red }}>{agent.connCallback}/{agent.callback}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right: AI Coaching */}
             <div>
               <div style={{ fontSize: 8, color: T.purple, letterSpacing: "0.08em", marginBottom: 10, fontWeight: 500 }}>AI COACHING</div>
               {issues.map((issue, j) => (
@@ -203,11 +259,18 @@ function CoachCard({ agent, expanded, onToggle }) {
                   {issue.fix && <div style={{ marginTop: 4, padding: "5px 7px", borderRadius: 4, background: "#0a0a0a", fontSize: 10, color: T.text, fontWeight: 300 }}>{issue.fix}</div>}
                 </div>
               ))}
+              {agent.avgConnSec < 25 && (
+                <div style={{ padding: "8px 10px", borderRadius: 6, background: `${T.red}04`, border: `1px solid ${T.red}12`, marginBottom: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}><Led color={T.red} size={4} /><span style={{ fontSize: 7, fontWeight: 600, color: T.red, letterSpacing: "0.08em" }}>CRITICAL</span></div>
+                  <div style={{ fontSize: 10, color: T.dim, fontWeight: 300, lineHeight: 1.5 }}>평균 통화 {agent.avgConnSec}초 — 스크립트 전달 부족.</div>
+                  <div style={{ marginTop: 4, padding: "5px 7px", borderRadius: 4, background: "#0a0a0a", fontSize: 10, color: T.text, fontWeight: 300 }}>핵심 멘트 전달 후 종료. 최소 30초 유지.</div>
+                </div>
+              )}
               <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
                 {[
                   { label: "SPEED", val: agent.avgInterval <= 20 ? "A" : agent.avgInterval <= 30 ? "B" : "C", color: agent.avgInterval <= 20 ? T.green : agent.avgInterval <= 30 ? T.yellow : T.red },
                   { label: "QUALITY", val: parseFloat(connRate) > 28 ? "A" : parseFloat(connRate) > 22 ? "B" : "C", color: parseFloat(connRate) > 28 ? T.green : parseFloat(connRate) > 22 ? T.yellow : T.red },
-                  { label: "EFFORT", val: talkP > 70 ? "A" : talkP > 55 ? "B" : "C", color: talkP > 70 ? T.green : talkP > 55 ? T.yellow : T.red },
+                  { label: "CONVERT", val: (agent.signup / (agent.connected || 1)) > 0.1 ? "A" : (agent.signup / (agent.connected || 1)) > 0.05 ? "B" : "C", color: (agent.signup / (agent.connected || 1)) > 0.1 ? T.green : (agent.signup / (agent.connected || 1)) > 0.05 ? T.yellow : T.red },
                 ].map((g, j) => (
                   <div key={j} style={{ flex: 1, textAlign: "center", padding: "7px 4px", borderRadius: 6, background: "#0a0a0a", border: `1px solid ${T.border}` }}>
                     <div style={{ fontSize: 15, fontWeight: 200, color: g.color }}>{g.val}</div>
