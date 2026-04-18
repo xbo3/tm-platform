@@ -160,7 +160,10 @@ app.get('/api/customers',auth(['center_admin']),(req,res)=>{
 // ── Phone Validation ──
 function validatePhone(num){
   if(!num)return{valid:false,reason:'empty'};
-  const cleaned=String(num).replace(/[^0-9]/g,'');
+  let cleaned=String(num).replace(/[^0-9]/g,'');
+  // Fix leading 0 drop (Excel treats phone as number)
+  if(cleaned.length===10&&cleaned.startsWith('10'))cleaned='0'+cleaned;
+  if(cleaned.length===9&&['10','11','16','17','18','19'].some(p=>cleaned.startsWith(p)))cleaned='0'+cleaned;
   if(cleaned.length<10||cleaned.length>11)return{valid:false,reason:'length'};
   if(!['010','011','016','017','018','019'].some(p=>cleaned.startsWith(p)))return{valid:false,reason:'prefix'};
   const f=cleaned.length===11?`${cleaned.slice(0,3)}-${cleaned.slice(3,7)}-${cleaned.slice(7)}`:`${cleaned.slice(0,3)}-${cleaned.slice(3,6)}-${cleaned.slice(6)}`;
@@ -213,20 +216,20 @@ app.post('/api/lists/upload-file',auth(['center_admin']),upload.single('file'),(
   // Parse Excel
   let rows=[];
   try{
-    const wb=XLSX.read(req.file.buffer,{type:'buffer'});
+    const wb=XLSX.read(req.file.buffer,{type:'buffer',codepage:65001,raw:true});
     const ws=wb.Sheets[wb.SheetNames[0]];
-    rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+    rows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:false});
   }catch(e){return res.status(400).json({error:'Failed to parse file: '+e.message});}
 
   if(!rows.length)return res.status(400).json({error:'Empty file'});
 
-  // Auto-detect columns
+  // Auto-detect columns (handles Korean + English)
   const cols=Object.keys(rows[0]);
-  const phoneCol=cols.find(c=>/phone|전화|번호|핸드폰|mobile|tel|연락처|hp/i.test(c))||cols.find(c=>{
+  const phoneCol=cols.find(c=>{try{return/phone|전화|번호|핸드폰|mobile|tel|연락처|hp|휴대/i.test(c)}catch{return false}})||cols.find(c=>{
     const v=String(rows[0][c]).replace(/[^0-9]/g,'');return v.length>=10&&v.startsWith('01');
-  })||cols[0];
-  const nameCol=cols.find(c=>/name|이름|성명|고객명/i.test(c))||null;
-  const regionCol=cols.find(c=>/region|지역|주소|address|시도/i.test(c))||null;
+  })||cols.find(c=>{const v=String(rows[0][c]).replace(/[^0-9]/g,'');return v.length>=9;})||cols[0];
+  const nameCol=cols.find(c=>{try{return/name|이름|성명|고객명|고객/i.test(c)}catch{return false}})||null;
+  const regionCol=cols.find(c=>{try{return/region|지역|주소|address|시도|거주/i.test(c)}catch{return false}})||null;
 
   // Convert to customers array
   const customers=rows.map(r=>({
