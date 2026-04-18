@@ -136,12 +136,16 @@ function CoachCard({ agent, expanded, onToggle }) {
           <span style={{ fontSize: 11, fontWeight: 400 }}>{agent.name}</span>
         </div>
         <div style={{ flex: 1, marginLeft: 4, marginRight: 12 }}>
+          {/* Main bar: connected (green) + rest (gray) proportional to calls */}
           <div style={{ display: "flex", height: 22, borderRadius: 3, overflow: "hidden", background: "#0e0e0e" }}>
-            <div style={{ width: `${talkP}%`, height: "100%", background: `linear-gradient(90deg, ${T.cyan}66, ${T.cyan})`, display: "flex", alignItems: "center", paddingLeft: 8 }}>
-              <span style={{ fontSize: 8, fontWeight: 500, color: "#000", whiteSpace: "nowrap" }}>통화 {fmtM(agent.talkSec)}</span>
+            <div style={{ width: `${(agent.connected / agent.calls) * talkP}%`, height: "100%", background: `linear-gradient(90deg, ${T.green}88, ${T.green})`, display: "flex", alignItems: "center", paddingLeft: 8, minWidth: 0 }}>
+              <span style={{ fontSize: 8, fontWeight: 500, color: "#000", whiteSpace: "nowrap", overflow: "hidden" }}>연결 {agent.connected}</span>
+            </div>
+            <div style={{ width: `${((agent.calls - agent.connected) / agent.calls) * talkP}%`, height: "100%", background: `linear-gradient(90deg, ${T.cyan}44, ${T.cyan}66)`, display: "flex", alignItems: "center", paddingLeft: 4 }}>
+              <span style={{ fontSize: 7, fontWeight: 400, color: T.cyan, whiteSpace: "nowrap", overflow: "hidden" }}>통화 {fmtM(agent.talkSec)}</span>
             </div>
             <div style={{ flex: 1, height: "100%", background: "#1a1a1a", display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 8 }}>
-              <span style={{ fontSize: 9, fontWeight: 400, color: T.cyan }}>{agent.calls}콜</span>
+              <span style={{ fontSize: 9, fontWeight: 400, color: T.dim }}>{agent.calls}콜</span>
             </div>
           </div>
           <div style={{ display: "flex", height: 3, borderRadius: 2, overflow: "hidden", marginTop: 2 }}>
