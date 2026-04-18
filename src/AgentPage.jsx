@@ -10,8 +10,7 @@ const T = {
 
 
 
-const ME = { id: user?.agent_name || "A", name: user?.name || "Agent" };
-const TEAM = [
+const TEAM_DATA = [
   { id: "D", name: "최유나", calls: 82, connected: 22, signup: 3 },
   { id: "B", name: "이서연", calls: 71, connected: 18, signup: 2 },
   { id: "A", name: "김민수", calls: 42, connected: 12, signup: 1 },
@@ -69,6 +68,8 @@ function Ring({ pct, color, size=54, stroke=3.5, children }) {
 }
 
 export default function AgentPage({ user, onLogout }) {
+  const ME = { id: user?.agent_name || "A", name: user?.name || "Agent" };
+  const TEAM = TEAM_DATA;
   const [now, setNow] = useState(new Date());
   const [callState, setCallState] = useState("idle"); // idle | ringing | connected | done
   const [cur, setCur] = useState(null); // current calling customer
