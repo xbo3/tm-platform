@@ -160,19 +160,14 @@ app.get('/api/customers',auth(['center_admin']),(req,res)=>{
 // ── Phone Validation ──
 function validatePhone(num){
   if(!num)return{valid:false,reason:'empty'};
-  // Strip everything except digits
   let cleaned=String(num).replace(/[^0-9]/g,'');
   if(!cleaned||cleaned.length<8)return{valid:false,reason:'length'};
-  // Handle 8210XXXXXXXX (international)
-  if(cleaned.startsWith('82'))cleaned=cleaned.slice(2);
-  // Handle 10XXXXXXXX (no leading 0)
-  if(cleaned.startsWith('10')&&cleaned.length===10)cleaned='0'+cleaned;
-  // Handle 010XXXXXXXX
-  if(cleaned.length<10||cleaned.length>11)return{valid:false,reason:'length'};
+  if(cleaned.startsWith('82')&&cleaned.length>=11)cleaned=cleaned.slice(2);
+  if(cleaned.startsWith('10')&&(cleaned.length===10||cleaned.length===9))cleaned='0'+cleaned;
+  if(cleaned.length!==11)return{valid:false,reason:'length'};
   if(!cleaned.startsWith('010'))return{valid:false,reason:'prefix'};
-  // Check: digits after 010 must NOT start with 0 or 1
-  const afterPrefix=cleaned.slice(3);
-  if(afterPrefix.startsWith('0')||afterPrefix.startsWith('1'))return{valid:false,reason:'invalid_range'};
+  const d4=cleaned[3];
+  if(d4==='0'||d4==='1')return{valid:false,reason:'invalid_range'};
   const f=`${cleaned.slice(0,3)}-${cleaned.slice(3,7)}-${cleaned.slice(7)}`;
   return{valid:true,formatted:f};
 }
