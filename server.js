@@ -28,6 +28,7 @@ const PORT = process.env.PORT || 3000;
 let bootError = null; // set if DB init / DATABASE_URL missing — degrades server to 503 mode
 
 const app = express();
+app.set('trust proxy', true);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
@@ -731,8 +732,11 @@ async function start() {
       startCron();
       console.log('[boot] DB + cron OK');
     } catch (e) {
-      bootError = `DB init failed: ${e.message}`;
+      const detail = e.message || e.code || String(e);
+      bootError = `DB init failed: ${detail}`;
       console.error('[boot] ' + bootError);
+      console.error('[boot] error object:', e);
+      if (e.stack) console.error('[boot] stack:', e.stack);
     }
   }
   app.listen(PORT, '0.0.0.0', () => console.log(`TM Platform v8 on port ${PORT}${bootError ? ' (DEGRADED)' : ''}`));
