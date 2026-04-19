@@ -1,5 +1,10 @@
 import pg from 'pg';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
 const { Pool } = pg;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -8,13 +13,20 @@ const pool = new Pool({
 
 export const query = (text, params) => pool.query(text, params);
 
+async function runMigration(file) {
+  const sql = fs.readFileSync(path.join(__dirname, 'migrations', file), 'utf8');
+  await query(sql);
+  console.log(`[migration] ${file} applied`);
+}
+
 export async function initDB() {
+  // Base schema (v7) — idempotent
   await query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       email VARCHAR(255) UNIQUE NOT NULL,
       password VARCHAR(255) NOT NULL,
-      role VARCHAR(20) NOT NULL CHECK (role IN ('super_admin','center_admin','agent')),
+      role VARCHAR(20) NOT NULL CHECK (role IN ('super_admin','center_admin','agent','lead_monitor')),
       name VARCHAR(100),
       center_id INTEGER,
       phone_id INTEGER,
@@ -61,7 +73,8 @@ export async function initDB() {
       assigned_agent VARCHAR(10),
       name VARCHAR(100),
       phone_number VARCHAR(20) NOT NULL,
-      status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','calling','done','no_answer','invalid','retry')),
+      region VARCHAR(100),
+      status VARCHAR(20) DEFAULT 'pending',
       no_answer_count INTEGER DEFAULT 0,
       memo TEXT DEFAULT '',
       created_at TIMESTAMP DEFAULT NOW(),
@@ -74,10 +87,11 @@ export async function initDB() {
       center_id INTEGER REFERENCES centers(id),
       agent VARCHAR(10),
       phone_id INTEGER REFERENCES phones(id),
-      result VARCHAR(20) CHECK (result IN ('connected','no_answer','busy','failed','invalid')),
+      result VARCHAR(20),
       duration_sec INTEGER DEFAULT 0,
       started_at TIMESTAMP DEFAULT NOW(),
-      ended_at TIMESTAMP
+      ended_at TIMESTAMP,
+      is_inbound BOOLEAN DEFAULT false
     );
 
     CREATE TABLE IF NOT EXISTS recordings (
@@ -89,7 +103,6 @@ export async function initDB() {
       expires_at TIMESTAMP
     );
 
-    -- Add foreign keys to users after centers/phones exist
     DO $$ BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_users_center') THEN
         ALTER TABLE users ADD CONSTRAINT fk_users_center FOREIGN KEY (center_id) REFERENCES centers(id) ON DELETE SET NULL;
@@ -101,32 +114,68 @@ export async function initDB() {
     END $$;
   `);
 
-  // Seed super admin if not exists
+  // Run v8 migration
+  try {
+    await runMigration('002_v8.sql');
+  } catch (e) {
+    console.error('[migration] 002_v8.sql failed:', e.message);
+    throw e;
+  }
+
+  // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {
     const bcrypt = (await import('bcryptjs')).default;
-    const hash = await bcrypt.hash('admin123', 10);
-    await query(`INSERT INTO users (email, password, role, name) VALUES ($1, $2, 'super_admin', 'Super Admin')`, ['admin@tm.co.kr', hash]);
 
-    // Seed demo center
-    const center = await query(`INSERT INTO centers (name, plan) VALUES ('서울 강남센터', 'premium') RETURNING id`);
+    const adminHash = await bcrypt.hash('admin123', 10);
+    await query(
+      `INSERT INTO users (email, password, role, name) VALUES ($1, $2, 'super_admin', 'Super Admin')`,
+      ['admin@tm.co.kr', adminHash]
+    );
+
+    const center = await query(
+      `INSERT INTO centers (name, plan) VALUES ('서울 강남센터', 'premium') RETURNING id`
+    );
     const cid = center.rows[0].id;
 
     const centerHash = await bcrypt.hash('center123', 10);
-    const cAdmin = await query(`INSERT INTO users (email, password, role, name, center_id) VALUES ($1, $2, 'center_admin', '김센터장', $3) RETURNING id`, ['center@tm.co.kr', centerHash, cid]);
+    const cAdmin = await query(
+      `INSERT INTO users (email, password, role, name, center_id) VALUES ($1, $2, 'center_admin', '김센터장', $3) RETURNING id`,
+      ['center@tm.co.kr', centerHash, cid]
+    );
     await query(`UPDATE centers SET owner_id=$1 WHERE id=$2`, [cAdmin.rows[0].id, cid]);
 
-    // Create 5 phones + agents
+    // 5 agents per methodology: 김정희(KJ)/이상진(LS)/박진우(PJ)/최서연(CS)/정하늘(JH)
+    // but keep simple letter agent_name (A-E) for compat with existing data model
+    const agentSeeds = [
+      { letter: 'A', kor: '김정희' },
+      { letter: 'B', kor: '이상진' },
+      { letter: 'C', kor: '박진우' },
+      { letter: 'D', kor: '최서연' },
+      { letter: 'E', kor: '정하늘' },
+    ];
     const agentHash = await bcrypt.hash('agent123', 10);
-    for (let i = 0; i < 5; i++) {
-      const phone = await query(`INSERT INTO phones (center_id, sip_account) VALUES ($1, $2) RETURNING id`, [cid, `200${i + 1}`]);
-      const letter = String.fromCharCode(65 + i);
-      await query(`INSERT INTO users (email, password, role, name, center_id, phone_id) VALUES ($1, $2, 'agent', $3, $4, $5)`,
-        [`agent${letter.toLowerCase()}@tm.co.kr`, agentHash, `Agent ${letter}`, cid, phone.rows[0].id]);
+    for (let i = 0; i < agentSeeds.length; i++) {
+      const { letter, kor } = agentSeeds[i];
+      const phone = await query(
+        `INSERT INTO phones (center_id, sip_account) VALUES ($1, $2) RETURNING id`,
+        [cid, `200${i + 1}`]
+      );
+      await query(
+        `INSERT INTO users (email, password, role, name, agent_name, center_id, phone_id) VALUES ($1, $2, 'agent', $3, $4, $5, $6)`,
+        [`agent${letter.toLowerCase()}@tm.co.kr`, agentHash, kor, letter, cid, phone.rows[0].id]
+      );
     }
+
+    // Seed sample suppliers
+    await query(
+      `INSERT INTO suppliers (tg_id, note) VALUES ('@lee_db_kr','샘플 공급자'),('@kim_leads','샘플 공급자') ON CONFLICT (tg_id) DO NOTHING`
+    );
+
+    console.log('[seed] super_admin + center + 5 agents + sample suppliers');
   }
 
-  console.log('DB initialized');
+  console.log('[db] initialized');
 }
 
 export default pool;
