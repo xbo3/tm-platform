@@ -1,84 +1,93 @@
-import { useState, useEffect } from "react";
-import Dashboard from "./Dashboard.jsx";
-import AgentPage from "./AgentPage.jsx";
+import { useEffect, useState } from 'react';
+import './styles/tokens.css';
 
-const T = {
-  bg: "#0c0c10", card: "#111116", border: "#1c1c24",
-  text: "#e8e8ee", dim: "#7a7a8a", muted: "#3a3a48",
-  cyan: "#00e5ff", green: "#00ff88", red: "#ff2d55", purple: "#b388ff",
-};
+import Topbar from './components/Topbar.jsx';
+import AdminView from './views/AdminView.jsx';
+import ManagerView from './views/ManagerView.jsx';
+import LeadMonitorView from './views/LeadMonitorView.jsx';
+import AgentView from './views/AgentView.jsx';
+
+function defaultViewForRole(role) {
+  if (role === 'super_admin') return 'admin';
+  if (role === 'center_admin') return 'manager';
+  if (role === 'lead_monitor') return 'lead';
+  return 'agent';
+}
 
 function LoginPage({ onLogin }) {
-  const [email, setEmail] = useState("");
-  const [pass, setPass] = useState("");
-  const [err, setErr] = useState("");
+  const [email, setEmail] = useState('');
+  const [pass, setPass] = useState('');
+  const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
 
   const submit = async () => {
-    setLoading(true); setErr("");
+    setLoading(true); setErr('');
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password: pass }),
       });
       const data = await res.json();
-      if (!res.ok) { setErr(data.error || "Login failed"); setLoading(false); return; }
-      localStorage.setItem("tm_token", data.token);
-      localStorage.setItem("tm_user", JSON.stringify(data.user));
+      if (!res.ok) { setErr(data.error || 'Login failed'); setLoading(false); return; }
+      localStorage.setItem('tm_token', data.token);
+      localStorage.setItem('tm_user', JSON.stringify(data.user));
       onLogin(data.user);
-    } catch { setErr("Server error"); }
+    } catch { setErr('Server error'); }
     setLoading(false);
   };
 
-  const quick = (e) => { setEmail(e); setPass("1234"); };
+  const quick = (e, p = 'admin123') => {
+    setEmail(e);
+    setPass(p);
+  };
 
   return (
-    <div style={{ minHeight: "100vh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Poppins', sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600;700&display=swap');*{box-sizing:border-box;margin:0;padding:0}`}</style>
-      <div style={{ width: 380, padding: "40px 32px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 16 }}>
-        <div style={{ textAlign: "center", marginBottom: 32 }}>
-          <div style={{ fontSize: 28, fontWeight: 700, color: T.cyan, letterSpacing: "0.08em" }}>TM</div>
-          <div style={{ fontSize: 12, color: T.dim, marginTop: 4, letterSpacing: "0.06em" }}>COMMAND CENTER</div>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="card" style={{ width: 380, padding: 32 }}>
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.06em' }}>TM</div>
+          <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 4, letterSpacing: '0.08em' }}>COMMAND CENTER · v8</div>
         </div>
 
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 10, color: T.muted, marginBottom: 6, letterSpacing: "0.06em" }}>EMAIL</div>
-          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email@tm.kr"
-            style={{ width: "100%", padding: "12px 14px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.bg, color: T.text, fontSize: 14, fontFamily: "'Poppins',sans-serif", outline: "none" }}
-            onKeyDown={e => e.key === "Enter" && submit()} />
-        </div>
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 10, color: T.muted, marginBottom: 6, letterSpacing: "0.06em" }}>PASSWORD</div>
+        <label style={{ display: 'block', marginBottom: 14 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, letterSpacing: '0.05em' }}>EMAIL</div>
+          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email@tm.co.kr"
+            onKeyDown={e => e.key === 'Enter' && submit()}
+            style={{ width: '100%' }} />
+        </label>
+
+        <label style={{ display: 'block', marginBottom: 16 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, letterSpacing: '0.05em' }}>PASSWORD</div>
           <input type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="****"
-            style={{ width: "100%", padding: "12px 14px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.bg, color: T.text, fontSize: 14, fontFamily: "'Poppins',sans-serif", outline: "none" }}
-            onKeyDown={e => e.key === "Enter" && submit()} />
-        </div>
+            onKeyDown={e => e.key === 'Enter' && submit()}
+            style={{ width: '100%' }} />
+        </label>
 
-        {err && <div style={{ fontSize: 11, color: T.red, marginBottom: 12, textAlign: "center" }}>{err}</div>}
+        {err && <div style={{ fontSize: 11, color: 'var(--neg)', marginBottom: 10, textAlign: 'center' }}>{err}</div>}
 
-        <button onClick={submit} disabled={loading} style={{
-          width: "100%", padding: "14px 0", borderRadius: 10, border: "none",
-          background: T.cyan, color: "#000", fontSize: 14, fontWeight: 600,
-          cursor: "pointer", fontFamily: "'Poppins',sans-serif", letterSpacing: "0.04em",
-          opacity: loading ? 0.6 : 1,
-        }}>{loading ? "..." : "LOGIN"}</button>
+        <button className="btn primary" onClick={submit} disabled={loading} style={{ width: '100%', padding: 12, fontSize: 13 }}>
+          {loading ? '...' : 'LOGIN'}
+        </button>
 
-        <div style={{ marginTop: 24, fontSize: 10, color: T.muted, textAlign: "center", letterSpacing: "0.04em" }}>QUICK LOGIN</div>
-        <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap", justifyContent: "center" }}>
+        <div style={{ marginTop: 24, fontSize: 10, color: 'var(--text-faint)', textAlign: 'center', letterSpacing: '0.04em' }}>QUICK LOGIN</div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
           {[
-            { label: "센터장", email: "center@tm.kr", color: T.cyan },
-            { label: "A", email: "agenta@tm.kr", color: T.dim },
-            { label: "B", email: "agentb@tm.kr", color: T.dim },
-            { label: "C", email: "agentc@tm.kr", color: T.dim },
-            { label: "D", email: "agentd@tm.kr", color: T.dim },
-            { label: "E", email: "agente@tm.kr", color: T.dim },
+            { label: '슈퍼', email: 'admin@tm.co.kr', pw: 'admin123' },
+            { label: '센터장', email: 'center@tm.co.kr', pw: 'center123' },
+            { label: 'A', email: 'agenta@tm.co.kr', pw: 'agent123' },
+            { label: 'B', email: 'agentb@tm.co.kr', pw: 'agent123' },
+            { label: 'C', email: 'agentc@tm.co.kr', pw: 'agent123' },
+            { label: 'D', email: 'agentd@tm.co.kr', pw: 'agent123' },
+            { label: 'E', email: 'agente@tm.co.kr', pw: 'agent123' },
           ].map(q => (
-            <button key={q.email} onClick={() => quick(q.email)} style={{
-              padding: "6px 14px", borderRadius: 6, border: `1px solid ${T.border}`,
-              background: email === q.email ? `${T.cyan}12` : "transparent",
-              color: email === q.email ? T.cyan : q.color,
-              fontSize: 11, cursor: "pointer", fontFamily: "'Poppins',sans-serif",
-            }}>{q.label}</button>
+            <button
+              key={q.email}
+              onClick={() => quick(q.email, q.pw)}
+              className="btn"
+              style={{ fontSize: 10, padding: '4px 10px', borderColor: email === q.email ? 'var(--accent)' : 'var(--border)' }}>
+              {q.label}
+            </button>
           ))}
         </div>
       </div>
@@ -88,23 +97,39 @@ function LoginPage({ onLogin }) {
 
 export default function App() {
   const [user, setUser] = useState(null);
+  const [view, setView] = useState(null);
 
   useEffect(() => {
     try {
-      const u = JSON.parse(localStorage.getItem("tm_user"));
-      if (u) setUser(u);
+      const u = JSON.parse(localStorage.getItem('tm_user'));
+      if (u) {
+        setUser(u);
+        setView(defaultViewForRole(u.role));
+      }
     } catch {}
   }, []);
 
-  const logout = () => {
-    localStorage.removeItem("tm_token");
-    localStorage.removeItem("tm_user");
-    setUser(null);
+  const handleLogin = (u) => {
+    setUser(u);
+    setView(defaultViewForRole(u.role));
   };
 
-  if (!user) return <LoginPage onLogin={setUser} />;
-  if (user.role === "center_admin" || user.role === "super_admin") return <Dashboard user={user} onLogout={logout} />;
-  if (user.role === "agent") return <AgentPage user={user} onLogout={logout} />;
+  const logout = () => {
+    localStorage.removeItem('tm_token');
+    localStorage.removeItem('tm_user');
+    setUser(null);
+    setView(null);
+  };
 
-  return <LoginPage onLogin={setUser} />;
+  if (!user) return <LoginPage onLogin={handleLogin} />;
+
+  return (
+    <div style={{ minHeight: '100vh' }}>
+      <Topbar user={user} view={view} onViewChange={setView} onLogout={logout} />
+      {view === 'admin' && <AdminView user={user} />}
+      {view === 'manager' && <ManagerView user={user} />}
+      {view === 'lead' && <LeadMonitorView user={user} />}
+      {view === 'agent' && <AgentView user={user} />}
+    </div>
+  );
 }
