@@ -25,6 +25,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PORT = process.env.PORT || 3000;
 
+let bootError = null; // set if DB init / DATABASE_URL missing — degrades server to 503 mode
+
 const app = express();
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: true, credentials: true }));
@@ -32,10 +34,18 @@ app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 }));
 
-// ── Health ──
-app.get('/api/health', (req, res) =>
-  res.json({ ok: true, time: new Date().toISOString(), version: 'v8' })
-);
+// ── Health (bootError-aware; rebound at end if needed) ──
+app.get('/api/health', (req, res) => {
+  if (bootError) return res.status(503).json({ ok: false, version: 'v8', error: bootError });
+  res.json({ ok: true, version: 'v8', time: new Date().toISOString() });
+});
+
+// degraded-mode guard — every /api/* (except /api/health) returns 503 if boot failed
+app.use('/api', (req, res, next) => {
+  if (!bootError) return next();
+  if (req.path === '/health' || req.path === '') return next();
+  res.status(503).json({ ok: false, error: bootError });
+});
 
 // ── Auth ──
 app.post('/api/auth/login', async (req, res) => {
@@ -713,17 +723,23 @@ app.get('*', (req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')));
 // ── Bootstrap ──
 async function start() {
   if (!process.env.DATABASE_URL) {
-    console.error('DATABASE_URL not set — exiting');
-    process.exit(1);
+    bootError = 'DATABASE_URL not set — provision a Postgres service on Railway and link it to this app';
+    console.error('[boot] ' + bootError);
+  } else {
+    try {
+      await initDB();
+      startCron();
+      console.log('[boot] DB + cron OK');
+    } catch (e) {
+      bootError = `DB init failed: ${e.message}`;
+      console.error('[boot] ' + bootError);
+    }
   }
-  await initDB();
-  startCron();
-  app.listen(PORT, '0.0.0.0', () => console.log(`TM Platform v8 on port ${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => console.log(`TM Platform v8 on port ${PORT}${bootError ? ' (DEGRADED)' : ''}`));
 }
 
 start().catch(err => {
-  console.error('Startup failed:', err);
-  process.exit(1);
+  console.error('Startup crashed:', err);
 });
 
 process.on('SIGTERM', () => { stopCron(); process.exit(0); });
