@@ -6,9 +6,10 @@ import { fileURLToPath } from 'url';
 const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const isInternalDb = (process.env.DATABASE_URL || '').includes('.railway.internal');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl: (process.env.NODE_ENV === 'production' && !isInternalDb) ? { rejectUnauthorized: false } : false,
 });
 
 export const query = (text, params) => pool.query(text, params);
