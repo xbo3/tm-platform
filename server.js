@@ -2,7 +2,6 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -10,536 +9,722 @@ import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import XLSX from 'xlsx';
 
+import { query, initDB } from './server/db.js';
+import { auth, requireRole, generateToken } from './server/auth.js';
+
+// v8 routes
+import distRouter from './server/routes/dist.js';
+import sipRouter from './server/routes/sip.js';
+import classifyRouter from './server/routes/classify.js';
+import suppliersRouter from './server/routes/suppliers.js';
+import adminRouter from './server/routes/admin.js';
+
+import { startCron, stopCron } from './server/jobs.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'tm-secret-2026';
 
-// ── In-Memory DB ──
-const hash = bcrypt.hashSync('1234', 10);
-const DB = {
-  users: [
-    {id:1,email:'admin@tm.kr',password:hash,name:'슈퍼관리자',role:'super_admin',center_id:null,phone_id:null,agent_name:null,is_active:1},
-    {id:2,email:'center@tm.kr',password:hash,name:'김센터장',role:'center_admin',center_id:1,phone_id:null,agent_name:null,is_active:1},
-    {id:3,email:'agenta@tm.kr',password:hash,name:'상담원A',role:'agent',center_id:1,phone_id:1,agent_name:'A',is_active:1},
-    {id:4,email:'agentb@tm.kr',password:hash,name:'상담원B',role:'agent',center_id:1,phone_id:2,agent_name:'B',is_active:1},
-    {id:5,email:'agentc@tm.kr',password:hash,name:'상담원C',role:'agent',center_id:1,phone_id:3,agent_name:'C',is_active:1},
-    {id:6,email:'agentd@tm.kr',password:hash,name:'상담원D',role:'agent',center_id:1,phone_id:4,agent_name:'D',is_active:1},
-    {id:7,email:'agente@tm.kr',password:hash,name:'상담원E',role:'agent',center_id:1,phone_id:5,agent_name:'E',is_active:1},
-  ],
-  centers: [{id:1,name:'서울 강남센터',owner_id:2,dist_mode:'auto',show_phone:0,plan:'premium',auto_check_no_answer:1,auto_check_invalid:1,no_answer_limit:3,is_active:1}],
-  phones: [
-    {id:1,center_id:1,sip_account:'2001',status:'calling'},{id:2,center_id:1,sip_account:'2002',status:'idle'},
-    {id:3,center_id:1,sip_account:'2003',status:'calling'},{id:4,center_id:1,sip_account:'2004',status:'idle'},
-    {id:5,center_id:1,sip_account:'2005',status:'calling'},
-  ],
-  customer_lists: [{id:1,center_id:1,title:'김사장 DB 4월',source:'김사장',is_test:0,total_count:50,uploaded_at:'2026-04-15'}],
-  customers: [],
-  calls: [],
-  recordings: [],
-  _nextId: {users:8,centers:2,phones:6,customer_lists:2,customers:1,calls:1},
-};
-
-// Seed customers
-const names=['홍길동','김철수','이영희','박민수','최지현','정수빈','강하늘','윤서연','조현우','한소희'];
-const phs=['010-1234-5678','010-2345-6789','010-3456-7890','010-4567-8901','010-5678-9012','010-6789-0123','010-7890-1234','010-8901-2345','010-9012-3456','010-0123-4567'];
-const agents=['A','B','C','D','E'];
-names.forEach((n,i)=>{DB.customers.push({id:DB._nextId.customers++,list_id:1,center_id:1,phone_id:(i%5)+1,agent_name:agents[i%5],name:n,phone_number:phs[i],status:'pending',no_answer_count:0,memo:''});});
-for(let i=0;i<40;i++){DB.customers.push({id:DB._nextId.customers++,list_id:1,center_id:1,phone_id:(i%5)+1,agent_name:agents[i%5],name:`고객${i+11}`,phone_number:`010-${String(1000+i).padStart(4,'0')}-${String(5000+i).padStart(4,'0')}`,status:'pending',no_answer_count:0,memo:''});}
-
-// ── Express ──
 const app = express();
-app.use(helmet({contentSecurityPolicy:false,crossOriginEmbedderPolicy:false}));
-app.use(cors({origin:true,credentials:true}));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
-app.use(express.json({limit:'10mb'}));
-app.use('/api/',rateLimit({windowMs:15*60*1000,max:500}));
+app.use(express.json({ limit: '10mb' }));
+app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 }));
 
 // ── Health ──
-app.get('/api/health',(req,res)=>res.json({ok:true,time:new Date().toISOString()}));
+app.get('/api/health', (req, res) =>
+  res.json({ ok: true, time: new Date().toISOString(), version: 'v8' })
+);
 
 // ── Auth ──
-const auth=(roles=[])=>(req,res,next)=>{
-  const token=req.headers.authorization?.split(' ')[1]||req.cookies?.token;
-  if(!token)return res.status(401).json({error:'Unauthorized'});
-  try{const d=jwt.verify(token,JWT_SECRET);req.user=d;if(roles.length&&!roles.includes(d.role))return res.status(403).json({error:'Forbidden'});next();}
-  catch{return res.status(401).json({error:'Invalid token'});}
-};
-
-app.post('/api/auth/login',(req,res)=>{
-  const{email,password}=req.body;
-  if(!email||!password)return res.status(400).json({error:'Email and password required'});
-  const user=DB.users.find(u=>u.email===email&&u.is_active);
-  if(!user||!bcrypt.compareSync(password,user.password))return res.status(401).json({error:'Invalid credentials'});
-  const token=jwt.sign({id:user.id,email:user.email,name:user.name,role:user.role,center_id:user.center_id,phone_id:user.phone_id,agent_name:user.agent_name},JWT_SECRET,{expiresIn:'24h'});
-  res.json({token,user:{id:user.id,email:user.email,name:user.name,role:user.role,center_id:user.center_id,agent_name:user.agent_name}});
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    const { rows } = await query('SELECT * FROM users WHERE email=$1', [email]);
+    if (rows.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
+    const user = rows[0];
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    const token = generateToken(user);
+    res.json({
+      token,
+      user: {
+        id: user.id, email: user.email, name: user.name, role: user.role,
+        center_id: user.center_id, agent_name: user.agent_name,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.post('/api/auth/logout',(req,res)=>{res.clearCookie('token');res.json({ok:true});});
-app.get('/api/auth/me',auth(),(req,res)=>{const u=DB.users.find(x=>x.id===req.user.id);if(!u)return res.status(404).json({error:'Not found'});res.json({id:u.id,email:u.email,name:u.name,role:u.role,center_id:u.center_id,agent_name:u.agent_name});});
+
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('token');
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', auth, async (req, res) => {
+  try {
+    const { rows } = await query('SELECT id, email, name, role, center_id, agent_name FROM users WHERE id=$1', [req.user.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ── Centers ──
-app.get('/api/centers',auth(['super_admin']),(req,res)=>{
-  res.json(DB.centers.map(c=>{
-    const owner=DB.users.find(u=>u.id===c.owner_id);
-    const calls=DB.calls.filter(x=>x.center_id===c.id);
-    const connected=calls.filter(x=>x.result==='connected');
-    return{...c,owner_name:owner?.name,phone_count:DB.phones.filter(p=>p.center_id===c.id).length,today_calls:calls.length,today_connected:connected.length,connect_rate:calls.length>0?((connected.length/calls.length)*100).toFixed(1):'0.0'};
-  }));
-});
-app.post('/api/centers',auth(['super_admin']),(req,res)=>{
-  const{name,admin_email,admin_name,phone_count=5,plan='basic'}=req.body;
-  const cid=DB._nextId.centers++;
-  DB.centers.push({id:cid,name,owner_id:null,dist_mode:'auto',show_phone:0,plan,auto_check_no_answer:1,auto_check_invalid:1,no_answer_limit:3,is_active:1});
-  const uid=DB._nextId.users++;
-  DB.users.push({id:uid,email:admin_email,password:hash,name:admin_name,role:'center_admin',center_id:cid,phone_id:null,agent_name:null,is_active:1});
-  DB.centers.find(c=>c.id===cid).owner_id=uid;
-  for(let i=0;i<phone_count;i++){
-    const pid=DB._nextId.phones++;
-    DB.phones.push({id:pid,center_id:cid,sip_account:`${2000+cid*10+i+1}`,status:'idle'});
-    const an=String.fromCharCode(65+i);
-    DB.users.push({id:DB._nextId.users++,email:`agent${an.toLowerCase()}_c${cid}@tm.kr`,password:hash,name:`상담원${an}`,role:'agent',center_id:cid,phone_id:pid,agent_name:an,is_active:1});
-  }
-  res.json({id:cid});
-});
-app.put('/api/centers/:id',auth(['super_admin','center_admin']),(req,res)=>{
-  const c=DB.centers.find(x=>x.id===+req.params.id);if(!c)return res.status(404).json({error:'Not found'});
-  Object.keys(req.body).forEach(k=>{if(k in c)c[k]=req.body[k];});
-  res.json({ok:true});
+app.get('/api/centers', auth, requireRole('super_admin'), async (req, res) => {
+  try {
+    const { rows } = await query(`
+      SELECT c.*, u.name as owner_name,
+        (SELECT COUNT(*) FROM phones WHERE center_id=c.id) as phone_count,
+        (SELECT COUNT(*) FROM users WHERE center_id=c.id AND role='agent') as agent_count,
+        (SELECT COUNT(*) FROM calls WHERE center_id=c.id) as today_calls,
+        (SELECT COUNT(*) FROM calls WHERE center_id=c.id AND result='connected') as today_connected
+      FROM centers c LEFT JOIN users u ON c.owner_id=u.id ORDER BY c.id`);
+    rows.forEach(r => {
+      r.connect_rate = r.today_calls > 0 ? +((r.today_connected / r.today_calls) * 100).toFixed(1) : 0;
+    });
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Dashboard ──
-app.get('/api/dashboard/:cid',auth(['center_admin','super_admin']),(req,res)=>{
-  const cid=+req.params.cid;
-  const center=DB.centers.find(c=>c.id===cid);
-  const agentUsers=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active);
-  const agentData=agentUsers.map(u=>{
-    const phone=DB.phones.find(p=>p.id===u.phone_id);
-    const calls=DB.calls.filter(c=>c.agent_name===u.agent_name&&c.center_id===cid);
-    const custs=DB.customers.filter(c=>c.agent_name===u.agent_name&&c.center_id===cid);
-    const connCalls=calls.filter(c=>c.result==='connected'||c.result==='signup'||c.result==='interest');
-    const avgConn=connCalls.length>0?Math.round(connCalls.reduce((a,c)=>a+(c.duration_sec||0),0)/connCalls.length):0;
-    // Hourly breakdown
-    const hourly=Array.from({length:24},(_,h)=>calls.filter(c=>(c.hour||0)===h).length);
-    return{
-      agent_name:u.agent_name,name:u.name,phone_id:u.phone_id,sip_account:phone?.sip_account,status:phone?.status||'idle',
-      total_calls:calls.length,
-      connected:connCalls.length,
-      signup:calls.filter(c=>c.result==='signup').length,
-      interest:calls.filter(c=>c.result==='interest').length,
-      rejected:calls.filter(c=>c.result==='rejected').length,
-      no_answer:calls.filter(c=>c.result==='no_answer').length,
-      invalid_count:calls.filter(c=>c.result==='invalid').length,
-      callback:calls.filter(c=>c.result==='callback').length,
-      talk_time:calls.reduce((a,c)=>a+(c.duration_sec||0),0),
-      avg_conn_sec:avgConn,
-      pending:custs.filter(c=>c.status==='pending').length,
-      hourly,
-    };
-  });
-  const lists=DB.customer_lists.filter(l=>l.center_id===cid).map(l=>{
-    const custs=DB.customers.filter(c=>c.list_id===l.id);
-    const used=custs.filter(c=>c.status!=='pending').length;
-    const done=custs.filter(c=>c.status==='done').length;
-    const inv=custs.filter(c=>c.status==='invalid').length;
-    return{...l,total:custs.length,used,done_count:done,invalid_count:inv,na_count:custs.filter(c=>c.status==='no_answer').length,remaining:custs.filter(c=>c.status==='pending').length,connect_rate:used>0?((done/used)*100).toFixed(1):'0.0',invalid_rate:used>0?((inv/used)*100).toFixed(1):'0.0'};
-  });
-  // Active test
-  const activeTests=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test===1).map(l=>{
-    const custs=DB.customers.filter(c=>c.list_id===l.id);
-    const tcalls=DB.calls.filter(c=>custs.some(cu=>cu.id===c.customer_id));
-    return{list_id:l.id,title:l.title,total:custs.length,done:custs.filter(c=>c.status!=='pending'&&c.status!=='calling').length,
-      connected:tcalls.filter(c=>c.result==='connected'||c.result==='signup').length,
-      no_answer:tcalls.filter(c=>c.result==='no_answer').length,
-      invalid:tcalls.filter(c=>c.result==='invalid').length};
-  });
-  res.json({center,agents:agentData,lists,active_tests:activeTests});
+app.put('/api/centers/:id', auth, requireRole('super_admin', 'center_admin'), async (req, res) => {
+  try {
+    const allowed = ['name', 'dist_mode', 'show_phone', 'auto_noans_exclude', 'auto_invalid_detect', 'plan', 'is_active'];
+    const sets = [];
+    const params = [];
+    let i = 1;
+    for (const k of allowed) {
+      if (k in req.body) { sets.push(`${k}=$${i++}`); params.push(req.body[k]); }
+    }
+    if (!sets.length) return res.json({ ok: true });
+    params.push(+req.params.id);
+    await query(`UPDATE centers SET ${sets.join(',')} WHERE id=$${i}`, params);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Dashboard (manager / super_admin) ──
+app.get('/api/dashboard/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const cid = +req.params.cid;
+    const today = new Date().toISOString().split('T')[0];
+
+    const center = await query('SELECT * FROM centers WHERE id=$1', [cid]);
+
+    const { rows: agents } = await query(`
+      SELECT u.id, u.name, u.agent_name, u.phone_id,
+        p.sip_account, p.status as phone_status,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1) as total_calls,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as connected,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='positive') as positive,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='no_answer') as no_answer,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='invalid') as invalid_count,
+        (SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE agent=u.agent_name AND center_id=$1) as talk_time,
+        (SELECT COUNT(*) FROM customers WHERE assigned_agent=u.agent_name AND center_id=$1 AND status='pending') as pending,
+        (SELECT COALESCE(AVG(duration_sec),0)::int FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as avg_conn_sec
+      FROM users u LEFT JOIN phones p ON u.phone_id=p.id
+      WHERE u.center_id=$1 AND u.role='agent' ORDER BY u.agent_name`, [cid]);
+
+    // hourly per agent (today)
+    const { rows: hourlyRows } = await query(`
+      SELECT agent, EXTRACT(HOUR FROM started_at)::int AS hour, COUNT(*)::int AS calls
+        FROM calls WHERE center_id=$1 AND started_at::date=$2
+        GROUP BY agent, hour`, [cid, today]);
+    const hourlyByAgent = {};
+    for (const r of hourlyRows) {
+      if (!hourlyByAgent[r.agent]) hourlyByAgent[r.agent] = Array(24).fill(0);
+      hourlyByAgent[r.agent][r.hour] = r.calls;
+    }
+    agents.forEach(a => { a.hourly = hourlyByAgent[a.agent_name] || Array(24).fill(0); });
+
+    const { rows: lists } = await query(`
+      SELECT cl.*,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id) as total,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status NOT IN ('pending','retry')) as used,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status IN ('done','positive')) as done_count,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status IN ('invalid','invalid_pre')) as invalid_count,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='no_answer') as na_count,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='pending') as remaining
+      FROM customer_lists cl WHERE cl.center_id=$1 ORDER BY cl.uploaded_at DESC`, [cid]);
+    lists.forEach(l => {
+      l.connect_rate = l.used > 0 ? +((l.done_count / l.used) * 100).toFixed(1) : 0;
+      l.invalid_rate = l.used > 0 ? +((l.invalid_count / l.used) * 100).toFixed(1) : 0;
+    });
+
+    const { rows: activeTests } = await query(`
+      SELECT cl.id as list_id, cl.title,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id) as total,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status NOT IN ('pending','calling')) as done,
+        (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=cl.id AND c.result IN ('connected','positive')) as connected,
+        (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=cl.id AND c.result='no_answer') as no_answer,
+        (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=cl.id AND c.result='invalid') as invalid
+      FROM customer_lists cl WHERE cl.center_id=$1 AND cl.is_test=true`, [cid]);
+
+    res.json({ center: center.rows[0], agents, lists, active_tests: activeTests });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Lists ──
-app.get('/api/lists/:cid',auth(['center_admin']),(req,res)=>{
-  const cid=+req.params.cid;
-  res.json(DB.customer_lists.filter(l=>l.center_id===cid).map(l=>{
-    const custs=DB.customers.filter(c=>c.list_id===l.id);
-    const used=custs.filter(c=>c.status!=='pending').length;
-    const done=custs.filter(c=>c.status==='done').length;
-    const inv=custs.filter(c=>c.status==='invalid').length;
-    const agentBreakdown=[...new Set(custs.map(c=>c.agent_name).filter(Boolean))].map(an=>{
-      const ac=custs.filter(c=>c.agent_name===an);
-      return{agent_name:an,distributed:ac.length,used:ac.filter(c=>c.status!=='pending').length,remaining:ac.filter(c=>c.status==='pending').length,connected:ac.filter(c=>c.status==='done').length,no_answer:ac.filter(c=>c.status==='no_answer').length,invalid_count:ac.filter(c=>c.status==='invalid').length};
+app.get('/api/lists/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const cid = +req.params.cid;
+    const { rows: lists } = await query(`
+      SELECT cl.*,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id) as total,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status NOT IN ('pending','retry')) as used,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status IN ('done','positive')) as connected,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status IN ('invalid','invalid_pre')) as invalid_count,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='pending') as remaining
+      FROM customer_lists cl WHERE cl.center_id=$1 ORDER BY cl.uploaded_at DESC`, [cid]);
+
+    for (const l of lists) {
+      l.connect_rate = l.used > 0 ? +((l.connected / l.used) * 100).toFixed(1) : 0;
+      l.invalid_rate = l.used > 0 ? +((l.invalid_count / l.used) * 100).toFixed(1) : 0;
+      const { rows: ag } = await query(`
+        SELECT assigned_agent as agent_name,
+          COUNT(*) as distributed,
+          COUNT(*) FILTER (WHERE status NOT IN ('pending','retry')) as used,
+          COUNT(*) FILTER (WHERE status='pending') as remaining,
+          COUNT(*) FILTER (WHERE status IN ('done','positive')) as connected,
+          COUNT(*) FILTER (WHERE status='no_answer') as no_answer,
+          COUNT(*) FILTER (WHERE status IN ('invalid','invalid_pre')) as invalid_count
+        FROM customers WHERE list_id=$1 AND assigned_agent IS NOT NULL
+        GROUP BY assigned_agent ORDER BY assigned_agent`, [l.id]);
+      l.agents = ag;
+    }
+    res.json(lists);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Phone validation + duplicate check ──
+function validatePhone(num) {
+  if (!num) return { valid: false, reason: 'empty' };
+  let cleaned = String(num).replace(/[^0-9]/g, '');
+  if (!cleaned || cleaned.length < 8) return { valid: false, reason: 'length' };
+  if (cleaned.startsWith('82') && cleaned.length >= 11) cleaned = cleaned.slice(2);
+  if (cleaned.startsWith('10') && (cleaned.length === 10 || cleaned.length === 9)) cleaned = '0' + cleaned;
+  if (cleaned.length !== 11) return { valid: false, reason: 'length' };
+  if (!cleaned.startsWith('010')) return { valid: false, reason: 'prefix' };
+  const d4 = cleaned[3];
+  if (d4 === '0' || d4 === '1') return { valid: false, reason: 'invalid_range' };
+  return { valid: true, formatted: `${cleaned.slice(0, 3)}-${cleaned.slice(3, 7)}-${cleaned.slice(7)}` };
+}
+
+async function checkDuplicate(phone, cid) {
+  const { rows } = await query(
+    `SELECT c.id, c.list_id, c.status, c.no_answer_count, cl.title
+       FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
+      WHERE c.phone_number=$1 AND c.center_id=$2 LIMIT 1`,
+    [phone, cid]
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  const calls = await query(
+    `SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE result='connected')::int AS connected
+       FROM calls WHERE customer_id=$1`,
+    [r.id]
+  );
+  return {
+    list_title: r.title,
+    status: r.status,
+    no_answer_count: r.no_answer_count,
+    call_count: calls.rows[0].n,
+    connected: calls.rows[0].connected,
+    invalid: r.status === 'invalid' || r.status === 'invalid_pre',
+  };
+}
+
+async function ingestCustomers({ cid, title, source, customers, is_test }) {
+  const results = { total: customers.length, valid: 0, invalid_phone: 0, duplicate: 0, dup_details: [], inv_details: [] };
+  const valid = [];
+  for (const cu of customers) {
+    const chk = validatePhone(cu.phone || cu.phone_number);
+    if (!chk.valid) {
+      results.invalid_phone++;
+      results.inv_details.push({ phone: cu.phone || cu.phone_number, reason: chk.reason });
+      continue;
+    }
+    const dup = await checkDuplicate(chk.formatted, cid);
+    if (dup) {
+      results.duplicate++;
+      results.dup_details.push({
+        phone: chk.formatted, name: cu.name, prev_list: dup.list_title,
+        prev_status: dup.status, was_invalid: dup.invalid,
+        no_answer: dup.no_answer_count, calls: dup.call_count, connected: dup.connected,
+      });
+      continue;
+    }
+    results.valid++;
+    valid.push({ name: cu.name || null, phone: chk.formatted, region: cu.region || null });
+  }
+
+  const list = await query(
+    `INSERT INTO customer_lists (center_id, title, source, is_test, total_count)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [cid, title, source || '', !!is_test, results.valid]
+  );
+  const lid = list.rows[0].id;
+  for (const v of valid) {
+    await query(
+      `INSERT INTO customers (list_id, center_id, name, phone_number, region) VALUES ($1, $2, $3, $4, $5)`,
+      [lid, cid, v.name, v.phone, v.region]
+    );
+  }
+  results.list_id = lid;
+  results.quality = results.total > 0 ? Math.round((results.valid / results.total) * 100) : 0;
+
+  const dupAnalysis = {};
+  for (const d of results.dup_details) {
+    if (!dupAnalysis[d.prev_list]) dupAnalysis[d.prev_list] = { count: 0, invalid: 0, no_answer: 0, connected: 0 };
+    dupAnalysis[d.prev_list].count++;
+    if (d.was_invalid) dupAnalysis[d.prev_list].invalid++;
+    if (d.no_answer > 0) dupAnalysis[d.prev_list].no_answer++;
+    if (d.connected > 0) dupAnalysis[d.prev_list].connected++;
+  }
+  results.dup_by_list = Object.entries(dupAnalysis).map(([list, data]) => ({ list, ...data }));
+  return results;
+}
+
+app.post('/api/lists/upload', auth, requireRole('center_admin'), async (req, res) => {
+  try {
+    const { title, source, customers, is_test = false } = req.body;
+    if (!title || !Array.isArray(customers))
+      return res.status(400).json({ error: 'title and customers array required' });
+    const out = await ingestCustomers({ cid: req.user.center_id, title, source, customers, is_test });
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = file.originalname.toLowerCase();
+    if (ext.endsWith('.xlsx') || ext.endsWith('.xls') || ext.endsWith('.csv')) cb(null, true);
+    else cb(new Error('xlsx, xls, csv only'));
+  },
+});
+
+app.post('/api/lists/upload-file', auth, requireRole('center_admin'), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const { title, source, is_test = false } = req.body;
+    if (!title) return res.status(400).json({ error: 'title required' });
+
+    let rows = [];
+    try {
+      const wb = XLSX.read(req.file.buffer, { type: 'buffer', codepage: 65001, raw: true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false });
+    } catch (e) { return res.status(400).json({ error: 'Failed to parse: ' + e.message }); }
+    if (!rows.length) return res.status(400).json({ error: 'Empty file' });
+
+    const cols = Object.keys(rows[0]);
+    const phoneCol =
+      cols.find(c => /phone|전화|번호|핸드폰|mobile|tel|연락처|hp|휴대/i.test(c)) ||
+      cols.find(c => { const v = String(rows[0][c]).replace(/[^0-9]/g, ''); return v.length >= 10 && v.startsWith('01'); }) ||
+      cols[0];
+    const nameCol = cols.find(c => /name|이름|성명|고객명|고객/i.test(c)) || null;
+    const regionCol = cols.find(c => /region|지역|주소|address|시도|거주/i.test(c)) || null;
+
+    const customers = rows.map(r => ({
+      phone: String(r[phoneCol] || '').trim(),
+      name: nameCol ? String(r[nameCol] || '').trim() : null,
+      region: regionCol ? String(r[regionCol] || '').trim() : null,
+    }));
+
+    const out = await ingestCustomers({ cid: req.user.center_id, title, source, customers, is_test: is_test === 'true' || is_test === true });
+    out.detected_columns = { phone: phoneCol, name: nameCol, region: regionCol, all: cols };
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Customers / distribute (legacy alias kept; new code uses /api/dist/execute) ──
+app.post('/api/customers/distribute', auth, requireRole('center_admin'), async (req, res) => {
+  try {
+    const { list_id, percentage = 100 } = req.body;
+    const cid = req.user.center_id;
+    const { rows: pending } = await query(
+      `SELECT id FROM customers WHERE list_id=$1 AND assigned_agent IS NULL AND status='pending' ORDER BY id`,
+      [list_id]
+    );
+    if (!pending.length) return res.json({ ok: true, distributed: 0, message: 'No pending customers' });
+
+    const totalToDist = Math.ceil(pending.length * (percentage / 100));
+    const pool = pending.slice(0, totalToDist);
+
+    const { rows: agentsRows } = await query(
+      `SELECT agent_name FROM users WHERE center_id=$1 AND role='agent' AND agent_name IS NOT NULL ORDER BY agent_name`,
+      [cid]
+    );
+    const agents = agentsRows.map(r => r.agent_name);
+    if (!agents.length) return res.status(400).json({ error: 'No agents' });
+
+    const result = {};
+    agents.forEach(a => { result[a] = 0; });
+    pool.forEach((c, i) => {
+      const a = agents[i % agents.length];
+      result[a]++;
     });
-    return{...l,total:custs.length,used,connected:done,invalid_count:inv,remaining:custs.filter(c=>c.status==='pending').length,connect_rate:used>0?((done/used)*100).toFixed(1):'0.0',invalid_rate:used>0?((inv/used)*100).toFixed(1):'0.0',agents:agentBreakdown};
-  }));
+
+    let idx = 0;
+    for (const a of agents) {
+      const n = result[a];
+      for (let i = 0; i < n && idx < pool.length; i++, idx++) {
+        await query(`UPDATE customers SET assigned_agent=$1, updated_at=NOW() WHERE id=$2`, [a, pool[idx].id]);
+      }
+    }
+    await query(`UPDATE customer_lists SET is_distributed=true, is_active=true WHERE id=$1`, [list_id]);
+    await query(
+      `INSERT INTO distribution_events (list_id, total_distributed, split_json, triggered_by) VALUES ($1, $2, $3, 'manual')`,
+      [list_id, pool.length, JSON.stringify(result)]
+    );
+
+    res.json({ ok: true, distributed: pool.length, per_agent: result, remaining: pending.length - totalToDist });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Customers ──
-app.get('/api/customers',auth(['center_admin']),(req,res)=>{
-  const custs=DB.customers.filter(c=>c.center_id===req.user.center_id).slice(-200);
-  res.json(custs);
+// ── Queue status ──
+app.get('/api/queue/status/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const cid = +req.params.cid;
+    const { rows } = await query(
+      `SELECT u.agent_name,
+        COUNT(c.id) FILTER (WHERE c.status='pending') AS pending
+        FROM users u
+        LEFT JOIN customers c ON c.assigned_agent=u.agent_name AND c.center_id=$1
+       WHERE u.center_id=$1 AND u.role='agent' AND u.agent_name IS NOT NULL
+       GROUP BY u.agent_name ORDER BY u.agent_name`,
+      [cid]
+    );
+    res.json(rows.map(r => ({ agent_name: r.agent_name, pending: +r.pending, low: +r.pending < 30 })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Phone Validation ──
-function validatePhone(num){
-  if(!num)return{valid:false,reason:'empty'};
-  let cleaned=String(num).replace(/[^0-9]/g,'');
-  if(!cleaned||cleaned.length<8)return{valid:false,reason:'length'};
-  if(cleaned.startsWith('82')&&cleaned.length>=11)cleaned=cleaned.slice(2);
-  if(cleaned.startsWith('10')&&(cleaned.length===10||cleaned.length===9))cleaned='0'+cleaned;
-  if(cleaned.length!==11)return{valid:false,reason:'length'};
-  if(!cleaned.startsWith('010'))return{valid:false,reason:'prefix'};
-  const d4=cleaned[3];
-  if(d4==='0'||d4==='1')return{valid:false,reason:'invalid_range'};
-  const f=`${cleaned.slice(0,3)}-${cleaned.slice(3,7)}-${cleaned.slice(7)}`;
-  return{valid:true,formatted:f};
-}
-function checkDuplicate(phone,cid){
-  const ex=DB.customers.find(c=>c.phone_number===phone&&c.center_id===cid);
-  if(!ex)return null;
-  const calls=DB.calls.filter(c=>c.customer_id===ex.id);
-  const list=DB.customer_lists.find(l=>l.id===ex.list_id);
-  return{list_title:list?.title||'',status:ex.status,no_answer_count:ex.no_answer_count,call_count:calls.length,connected:calls.filter(c=>c.result==='connected').length,invalid:ex.status==='invalid'};
-}
-
-// ── Upload DB with validation ──
-app.post('/api/lists/upload',auth(['center_admin']),(req,res)=>{
-  const{title,source,customers,is_test=0}=req.body;
-  if(!title||!customers||!Array.isArray(customers))return res.status(400).json({error:'title and customers array required'});
-  const cid=req.user.center_id;
-  const results={total:customers.length,valid:0,invalid_phone:0,duplicate:0,dup_details:[],inv_details:[]};
-  const valid=[];
-  for(const cu of customers){
-    const chk=validatePhone(cu.phone||cu.phone_number);
-    if(!chk.valid){results.invalid_phone++;results.inv_details.push({phone:cu.phone||cu.phone_number,reason:chk.reason});continue;}
-    const dup=checkDuplicate(chk.formatted,cid);
-    if(dup){results.duplicate++;results.dup_details.push({phone:chk.formatted,name:cu.name,prev_list:dup.list_title,prev_status:dup.status,was_invalid:dup.invalid,no_answer:dup.no_answer_count,calls:dup.call_count,connected:dup.connected});continue;}
-    results.valid++;
-    valid.push({name:cu.name||null,phone:chk.formatted,region:cu.region||null});
-  }
-  const lid=DB._nextId.customer_lists++;
-  DB.customer_lists.push({id:lid,center_id:cid,title,source:source||'',is_test,total_count:results.valid,uploaded_at:new Date().toISOString().split('T')[0]});
-  for(const v of valid){DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:null,name:v.name,phone_number:v.phone,region:v.region,status:'pending',no_answer_count:0,memo:''});}
-  const quality=results.total>0?Math.round((results.valid/results.total)*100):0;
-  const dupAnalysis={};
-  for(const d of results.dup_details){if(!dupAnalysis[d.prev_list])dupAnalysis[d.prev_list]={count:0,invalid:0,no_answer:0,connected:0};dupAnalysis[d.prev_list].count++;if(d.was_invalid)dupAnalysis[d.prev_list].invalid++;if(d.no_answer>0)dupAnalysis[d.prev_list].no_answer++;if(d.connected>0)dupAnalysis[d.prev_list].connected++;}
-  res.json({list_id:lid,...results,quality,dup_by_list:Object.entries(dupAnalysis).map(([list,data])=>({list,...data}))});
+// ── Agent-side ──
+app.get('/api/agent/me', auth, requireRole('agent'), async (req, res) => {
+  try {
+    const cid = req.user.center_id;
+    const an = req.user.agent_name;
+    const { rows } = await query(`
+      SELECT
+        (SELECT COUNT(*) FROM calls WHERE agent=$2 AND center_id=$1)::int AS total_calls,
+        (SELECT COUNT(*) FROM calls WHERE agent=$2 AND center_id=$1 AND result IN ('connected','positive'))::int AS connected,
+        (SELECT COUNT(*) FROM calls WHERE agent=$2 AND center_id=$1 AND result='positive')::int AS signup,
+        (SELECT COUNT(*) FROM calls WHERE agent=$2 AND center_id=$1 AND result='no_answer')::int AS no_answer,
+        (SELECT COUNT(*) FROM calls WHERE agent=$2 AND center_id=$1 AND result='invalid')::int AS invalid,
+        (SELECT COUNT(*) FROM calls WHERE agent=$2 AND center_id=$1 AND result='reject')::int AS rejected,
+        (SELECT COUNT(*) FROM calls WHERE agent=$2 AND center_id=$1 AND result='recall')::int AS callback,
+        (SELECT COALESCE(SUM(duration_sec),0)::int FROM calls WHERE agent=$2 AND center_id=$1) AS talk_time,
+        (SELECT COUNT(*) FROM customers WHERE assigned_agent=$2 AND center_id=$1 AND status='pending')::int AS pending`,
+      [cid, an]
+    );
+    res.json({ agent_name: an, name: req.user.name, ...rows[0], interest: 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Excel/CSV Upload ──
-const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:20*1024*1024},fileFilter:(req,file,cb)=>{
-  const ext=file.originalname.toLowerCase();
-  if(ext.endsWith('.xlsx')||ext.endsWith('.xls')||ext.endsWith('.csv'))cb(null,true);
-  else cb(new Error('xlsx, xls, csv only'));
-}});
-
-app.post('/api/lists/upload-file',auth(['center_admin']),upload.single('file'),(req,res)=>{
-  if(!req.file)return res.status(400).json({error:'No file uploaded'});
-  const{title,source,is_test=0}=req.body;
-  if(!title)return res.status(400).json({error:'title required'});
-
-  // Parse Excel
-  let rows=[];
-  try{
-    const wb=XLSX.read(req.file.buffer,{type:'buffer',codepage:65001,raw:true});
-    const ws=wb.Sheets[wb.SheetNames[0]];
-    rows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:false});
-  }catch(e){return res.status(400).json({error:'Failed to parse file: '+e.message});}
-
-  if(!rows.length)return res.status(400).json({error:'Empty file'});
-
-  // Auto-detect columns (handles Korean + English)
-  const cols=Object.keys(rows[0]);
-  const phoneCol=cols.find(c=>{try{return/phone|전화|번호|핸드폰|mobile|tel|연락처|hp|휴대/i.test(c)}catch{return false}})||cols.find(c=>{
-    const v=String(rows[0][c]).replace(/[^0-9]/g,'');return v.length>=10&&v.startsWith('01');
-  })||cols.find(c=>{const v=String(rows[0][c]).replace(/[^0-9]/g,'');return v.length>=9;})||cols[0];
-  const nameCol=cols.find(c=>{try{return/name|이름|성명|고객명|고객/i.test(c)}catch{return false}})||null;
-  const regionCol=cols.find(c=>{try{return/region|지역|주소|address|시도|거주/i.test(c)}catch{return false}})||null;
-
-  // Convert to customers array
-  const customers=rows.map(r=>({
-    phone:String(r[phoneCol]||'').trim(),
-    name:nameCol?String(r[nameCol]||'').trim():null,
-    region:regionCol?String(r[regionCol]||'').trim():null,
-  }));
-
-  // Run through same validation
-  const cid=req.user.center_id;
-  const results={total:customers.length,valid:0,invalid_phone:0,duplicate:0,dup_details:[],inv_details:[]};
-  const valid=[];
-  for(const cu of customers){
-    const chk=validatePhone(cu.phone);
-    if(!chk.valid){results.invalid_phone++;results.inv_details.push({phone:cu.phone,reason:chk.reason});continue;}
-    const dup=checkDuplicate(chk.formatted,cid);
-    if(dup){results.duplicate++;results.dup_details.push({phone:chk.formatted,name:cu.name,prev_list:dup.list_title,prev_status:dup.status,was_invalid:dup.invalid,no_answer:dup.no_answer_count,calls:dup.call_count,connected:dup.connected});continue;}
-    results.valid++;
-    valid.push({name:cu.name,phone:chk.formatted,region:cu.region});
-  }
-  const lid=DB._nextId.customer_lists++;
-  DB.customer_lists.push({id:lid,center_id:cid,title,source:source||'',is_test:+is_test,total_count:results.valid,uploaded_at:new Date().toISOString().split('T')[0]});
-  for(const v of valid){DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:null,name:v.name,phone_number:v.phone,region:v.region,status:'pending',no_answer_count:0,memo:''});}
-  const quality=results.total>0?Math.round((results.valid/results.total)*100):0;
-  const dupAnalysis={};
-  for(const d of results.dup_details){if(!dupAnalysis[d.prev_list])dupAnalysis[d.prev_list]={count:0,invalid:0,no_answer:0,connected:0};dupAnalysis[d.prev_list].count++;if(d.was_invalid)dupAnalysis[d.prev_list].invalid++;if(d.no_answer>0)dupAnalysis[d.prev_list].no_answer++;if(d.connected>0)dupAnalysis[d.prev_list].connected++;}
-  res.json({list_id:lid,...results,quality,detected_columns:{phone:phoneCol,name:nameCol,region:regionCol,all:cols},dup_by_list:Object.entries(dupAnalysis).map(([list,data])=>({list,...data}))});
+app.get('/api/agent/team', auth, requireRole('agent'), async (req, res) => {
+  try {
+    const cid = req.user.center_id;
+    const { rows } = await query(`
+      SELECT u.agent_name, u.name,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1)::int AS total_calls,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive'))::int AS connected,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='positive')::int AS signup
+       FROM users u
+      WHERE u.center_id=$1 AND u.role='agent' AND u.agent_name IS NOT NULL
+      ORDER BY total_calls DESC`, [cid]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Distribute (enhanced) ──
-app.post('/api/customers/distribute',auth(['center_admin']),(req,res)=>{
-  const{list_id,mode,agents,percentage=100,specific=null}=req.body;
-  const cid=req.user.center_id;
-  const center=DB.centers.find(c=>c.id===cid);
-  const distMode=mode||center?.dist_mode||'auto';
-  const pending=DB.customers.filter(c=>c.list_id===list_id&&!c.agent_name&&c.status==='pending');
-  if(!pending.length)return res.json({ok:true,distributed:0,message:'No pending customers'});
-  const totalToDist=Math.ceil(pending.length*(percentage/100));
-  const pool=pending.slice(0,totalToDist);
-  const agentList=agents||DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active).map(u=>u.agent_name);
-  if(!agentList.length)return res.status(400).json({error:'No agents'});
-  const result={};agentList.forEach(a=>{result[a]=0;});
-  if(distMode==='manual'&&specific){
-    let idx=0;
-    for(const[agent,count]of Object.entries(specific)){if(!agentList.includes(agent))continue;for(let i=0;i<count&&idx<pool.length;i++,idx++){pool[idx].agent_name=agent;result[agent]++;}}
-  }else{
-    for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
-    pool.forEach((c,i)=>{const a=agentList[i%agentList.length];c.agent_name=a;result[a]++;});
-  }
-  res.json({ok:true,distributed:pool.filter(c=>c.agent_name).length,per_agent:result,remaining:pending.length-totalToDist});
-});
-
-// ── Auto Refill ──
-app.post('/api/customers/refill',auth(['center_admin']),(req,res)=>{
-  const{agent,list_id,amount}=req.body;
-  const pool=DB.customers.filter(c=>c.list_id===list_id&&!c.agent_name&&c.status==='pending');
-  const toAssign=pool.slice(0,amount);
-  toAssign.forEach(c=>{c.agent_name=agent;});
-  res.json({ok:true,refilled:toAssign.length,remaining_pool:pool.length-toAssign.length});
-});
-
-// ── Queue Status ──
-app.get('/api/queue/status/:cid',auth(['center_admin']),(req,res)=>{
-  const cid=+req.params.cid;
-  const agents=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active);
-  res.json(agents.map(a=>{const p=DB.customers.filter(c=>c.center_id===cid&&c.agent_name===a.agent_name&&c.status==='pending').length;return{agent_name:a.agent_name,pending:p,low:p<50};}));
-});
-
-// ── Agent Endpoints ──
-app.get('/api/agent/me',auth(['agent']),(req,res)=>{
-  const cid=req.user.center_id;const an=req.user.agent_name;
-  const calls=DB.calls.filter(c=>c.agent_name===an&&c.center_id===cid);
-  const custs=DB.customers.filter(c=>c.agent_name===an&&c.center_id===cid);
-  const conn=calls.filter(c=>['connected','signup','interest'].includes(c.result));
-  res.json({
-    agent_name:an,name:req.user.name,
-    total_calls:calls.length,connected:conn.length,
-    signup:calls.filter(c=>c.result==='signup').length,
-    no_answer:calls.filter(c=>c.result==='no_answer').length,
-    invalid:calls.filter(c=>c.result==='invalid').length,
-    rejected:calls.filter(c=>c.result==='rejected').length,
-    callback:calls.filter(c=>c.result==='callback').length,
-    interest:calls.filter(c=>c.result==='interest').length,
-    talk_time:calls.reduce((a,c)=>a+(c.duration_sec||0),0),
-    pending:custs.filter(c=>c.status==='pending').length,
-  });
-});
-app.get('/api/agent/team',auth(['agent']),(req,res)=>{
-  const cid=req.user.center_id;
-  const center=DB.centers.find(c=>c.id===cid);
-  const agents=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active);
-  const showRanking=true; // TODO: from center settings
-  if(!showRanking)return res.json([]);
-  res.json(agents.map(u=>{
-    const calls=DB.calls.filter(c=>c.agent_name===u.agent_name&&c.center_id===cid);
-    const conn=calls.filter(c=>['connected','signup','interest'].includes(c.result));
-    return{agent_name:u.agent_name,name:u.name,total_calls:calls.length,connected:conn.length,signup:calls.filter(c=>c.result==='signup').length};
-  }).sort((a,b)=>b.total_calls-a.total_calls));
-});
-app.get('/api/agent/history',auth(['agent']),(req,res)=>{
-  const cid=req.user.center_id;const an=req.user.agent_name;
-  const calls=DB.calls.filter(c=>c.agent_name===an&&c.center_id===cid).sort((a,b)=>new Date(b.started_at)-new Date(a.started_at)).slice(0,50);
-  const result=calls.map(c=>{
-    const cust=DB.customers.find(x=>x.id===c.customer_id);
-    const center=DB.centers.find(x=>x.id===cid);
-    const phone=cust?cust.phone_number:'';
-    const masked=center&&!center.show_phone&&phone?phone.replace(/(\d{3})-(\d{4})-(\d{4})/,'$1-****-$3'):phone;
-    return{id:c.id,name:cust?.name||null,phone:masked,result:c.result,duration:c.duration_sec||0,time:c.started_at,is_inbound:c.is_inbound||false};
-  });
-  res.json(result);
+app.get('/api/agent/history', auth, requireRole('agent'), async (req, res) => {
+  try {
+    const cid = req.user.center_id;
+    const an = req.user.agent_name;
+    const { rows } = await query(`
+      SELECT c.id, c.result, c.duration_sec AS duration, c.started_at AS time, c.is_inbound,
+             cu.name, cu.phone_number AS phone
+        FROM calls c LEFT JOIN customers cu ON cu.id=c.customer_id
+       WHERE c.agent=$2 AND c.center_id=$1
+       ORDER BY c.started_at DESC LIMIT 50`, [cid, an]);
+    const center = await query(`SELECT show_phone FROM centers WHERE id=$1`, [cid]);
+    const showPhone = center.rows[0]?.show_phone;
+    res.json(rows.map(r => ({
+      ...r,
+      phone: !showPhone && r.phone ? r.phone.replace(/(\d{3})-(\d{4})-(\d{4})/, '$1-****-$3') : r.phone,
+    })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Calls ──
-app.post('/api/calls/next',auth(['agent']),(req,res)=>{
-  const cid=req.user.center_id;const an=req.user.agent_name;
-  // Priority 1: Test DB customers first
-  const testLists=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test);
-  let c=null;
-  if(testLists.length){
-    const testIds=testLists.map(l=>l.id);
-    c=DB.customers.find(x=>x.center_id===cid&&x.agent_name===an&&x.status==='pending'&&testIds.includes(x.list_id));
-  }
-  // Priority 2: Normal DB customers
-  if(!c)c=DB.customers.find(x=>x.center_id===cid&&x.agent_name===an&&x.status==='pending');
-  if(!c)return res.status(404).json({error:'No more customers'});
-  c.status='calling';
-  const center=DB.centers.find(x=>x.id===cid);
-  const list=DB.customer_lists.find(l=>l.id===c.list_id);
-  const masked={...c,is_test:list?.is_test||0};
-  if(center&&!center.show_phone)masked.phone_number=c.phone_number.replace(/(\d{3})-(\d{4})-(\d{4})/,'$1-****-$3');
-  res.json(masked);
-});
-app.post('/api/calls/start',auth(['agent']),(req,res)=>{
-  const id=DB._nextId.calls++;
-  const hour=new Date().getHours();
-  DB.calls.push({id,customer_id:req.body.customer_id,center_id:req.user.center_id,phone_id:req.user.phone_id,agent_name:req.user.agent_name,result:null,duration_sec:0,started_at:new Date().toISOString(),hour});
-  res.json({call_id:id});
-});
-app.put('/api/calls/:id/end',auth(['agent']),(req,res)=>{
-  const call=DB.calls.find(c=>c.id===+req.params.id);if(!call)return res.status(404).json({error:'Not found'});
-  const{result,duration_sec,memo}=req.body;
-  call.result=result;call.duration_sec=duration_sec||0;call.ended_at=new Date().toISOString();
-  const cust=DB.customers.find(c=>c.id===call.customer_id);
-  if(cust){
-    if(result==='connected'){cust.status='done';if(memo)cust.memo=memo;}
-    else if(result==='no_answer'){cust.no_answer_count=(cust.no_answer_count||0)+1;const center=DB.centers.find(c=>c.id===req.user.center_id);cust.status=(center?.auto_check_no_answer&&cust.no_answer_count>=center.no_answer_limit)?'no_answer':'pending';}
-    else if(result==='invalid'){cust.status='invalid';}
-    else if(result==='signup'){cust.status='done';cust.result_detail='signup';if(memo)cust.memo=memo;}
-    else if(result==='interest'){cust.status='done';cust.result_detail='interest';if(memo)cust.memo=memo;}
-    else if(result==='callback'){cust.status='pending';cust.result_detail='callback';if(memo)cust.memo=memo;}
-    else if(result==='rejected'){cust.status='done';cust.result_detail='rejected';if(memo)cust.memo=memo;}
-    else{cust.status='pending';}
-  }
-  const phone=DB.phones.find(p=>p.id===req.user.phone_id);if(phone)phone.status='idle';
-  res.json({ok:true});
+app.post('/api/calls/next', auth, requireRole('agent'), async (req, res) => {
+  try {
+    const cid = req.user.center_id;
+    const an = req.user.agent_name;
+    // priority: test list first, then recall (recall_at <= now), then pending
+    let { rows } = await query(`
+      SELECT c.id, c.name, c.phone_number, c.memo, c.list_id, cl.is_test
+        FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
+       WHERE c.center_id=$1 AND c.assigned_agent=$2 AND c.status='pending' AND cl.is_test=true
+       ORDER BY c.id LIMIT 1`, [cid, an]);
+    if (!rows.length) {
+      ({ rows } = await query(`
+        SELECT c.id, c.name, c.phone_number, c.memo, c.list_id, cl.is_test
+          FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
+         WHERE c.center_id=$1 AND c.assigned_agent=$2 AND c.status='recall' AND c.recall_at <= NOW()
+         ORDER BY c.recall_at LIMIT 1`, [cid, an]));
+    }
+    if (!rows.length) {
+      ({ rows } = await query(`
+        SELECT c.id, c.name, c.phone_number, c.memo, c.list_id, cl.is_test
+          FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
+         WHERE c.center_id=$1 AND c.assigned_agent=$2 AND c.status='pending'
+         ORDER BY c.id LIMIT 1`, [cid, an]));
+    }
+    if (!rows.length) return res.status(404).json({ error: 'No more customers' });
+
+    const c = rows[0];
+    await query(`UPDATE customers SET status='calling', updated_at=NOW() WHERE id=$1`, [c.id]);
+
+    const center = await query(`SELECT show_phone FROM centers WHERE id=$1`, [cid]);
+    const showPhone = center.rows[0]?.show_phone;
+    if (!showPhone && c.phone_number) {
+      c.phone_number = c.phone_number.replace(/(\d{3})-(\d{4})-(\d{4})/, '$1-****-$3');
+    }
+    res.json(c);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Inbound Call Matching ──
-app.post('/api/calls/inbound',auth(['agent']),(req,res)=>{
-  const{phone_number}=req.body;
-  if(!phone_number)return res.status(400).json({error:'phone_number required'});
-  const cleaned=String(phone_number).replace(/[^0-9]/g,'');
-  const formatted=cleaned.length===11?`${cleaned.slice(0,3)}-${cleaned.slice(3,7)}-${cleaned.slice(7)}`:`${cleaned.slice(0,3)}-${cleaned.slice(3,6)}-${cleaned.slice(6)}`;
-  const cid=req.user.center_id;
-  // Find customer in any list for this center
-  const cust=DB.customers.find(c=>c.phone_number===formatted&&c.center_id===cid);
-  if(!cust)return res.json({matched:false,phone:formatted});
-  // Get call history for this customer
-  const calls=DB.calls.filter(c=>c.customer_id===cust.id).sort((a,b)=>new Date(b.started_at)-new Date(a.started_at));
-  const lastCall=calls[0];
-  const list=DB.customer_lists.find(l=>l.id===cust.list_id);
-  const center=DB.centers.find(c=>c.id===cid);
-  const maskedPhone=center&&!center.show_phone?cust.phone_number.replace(/(\d{3})-(\d{4})-(\d{4})/,'$1-****-$3'):cust.phone_number;
-  res.json({
-    matched:true,
-    customer:{id:cust.id,name:cust.name,phone:maskedPhone,phone_raw:cust.phone_number,region:cust.region||null,status:cust.status,no_answer_count:cust.no_answer_count,memo:cust.memo,agent_name:cust.agent_name,list_title:list?.title||''},
-    last_call:lastCall?{time:lastCall.started_at,result:lastCall.result,duration:lastCall.duration_sec,agent:lastCall.agent_name}:null,
-    call_count:calls.length,
-    days_since_last:lastCall?Math.floor((Date.now()-new Date(lastCall.started_at).getTime())/(1000*60*60*24)):null,
-  });
+app.post('/api/calls/start', auth, requireRole('agent'), async (req, res) => {
+  try {
+    const { customer_id } = req.body;
+    const call = await query(
+      `INSERT INTO calls (customer_id, center_id, agent, phone_id, started_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id`,
+      [customer_id, req.user.center_id, req.user.agent_name, req.user.phone_id]
+    );
+    if (req.user.phone_id) await query(`UPDATE phones SET status='calling' WHERE id=$1`, [req.user.phone_id]);
+    res.json({ call_id: call.rows[0].id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Inbound Call End (update status from no_answer/pending to new result) ──
-app.put('/api/calls/inbound/:custId/end',auth(['agent']),(req,res)=>{
-  const cust=DB.customers.find(c=>c.id===+req.params.custId);
-  if(!cust)return res.status(404).json({error:'Customer not found'});
-  const{result,duration_sec,memo}=req.body;
-  // Record the call
-  const callId=DB._nextId.calls++;
-  DB.calls.push({id:callId,customer_id:cust.id,center_id:req.user.center_id,phone_id:req.user.phone_id,agent_name:req.user.agent_name,result,duration_sec:duration_sec||0,started_at:new Date().toISOString(),ended_at:new Date().toISOString(),is_inbound:true});
-  // Update customer status
-  const prev=cust.status;
-  if(result==='connected'||result==='signup'||result==='interest'){cust.status='done';cust.result_detail=result;}
-  else if(result==='callback'){cust.result_detail='callback';}
-  else if(result==='rejected'){cust.status='done';cust.result_detail='rejected';}
-  if(memo)cust.memo=memo;
-  res.json({ok:true,call_id:callId,prev_status:prev,new_status:cust.status});
+app.put('/api/calls/:id/end', auth, requireRole('agent'), async (req, res) => {
+  try {
+    const { result, duration_sec, memo } = req.body;
+    // map UI result keywords → DB result vocab
+    const map = { signup: 'positive', interest: 'connected', rejected: 'reject', callback: 'recall' };
+    const dbResult = map[result] || result;
+
+    const call = await query(
+      `UPDATE calls SET result=$1, duration_sec=$2, ended_at=NOW() WHERE id=$3 RETURNING customer_id, center_id`,
+      [dbResult, duration_sec || 0, +req.params.id]
+    );
+    if (call.rows.length === 0) return res.status(404).json({ error: 'Call not found' });
+    const c = call.rows[0];
+
+    if (c.customer_id) {
+      const cust = await query(`SELECT no_answer_count FROM customers WHERE id=$1`, [c.customer_id]);
+      const nac = cust.rows[0]?.no_answer_count || 0;
+      const center = await query(`SELECT auto_noans_exclude FROM centers WHERE id=$1`, [c.center_id]);
+      const autoExclude = center.rows[0]?.auto_noans_exclude;
+      let newStatus = 'pending';
+      const params = [];
+
+      if (dbResult === 'connected') newStatus = 'done';
+      else if (dbResult === 'positive') newStatus = 'positive';
+      else if (dbResult === 'reject') newStatus = 'done';
+      else if (dbResult === 'invalid') newStatus = 'invalid';
+      else if (dbResult === 'recall') newStatus = 'recall';
+      else if (dbResult === 'no_answer') {
+        const newCount = nac + 1;
+        await query(`UPDATE customers SET no_answer_count=$1 WHERE id=$2`, [newCount, c.customer_id]);
+        if (autoExclude && newCount >= 3) newStatus = 'dormant';
+        else newStatus = 'pending';
+      }
+
+      const memoUpdate = memo ? `, memo=$3` : '';
+      const memoParams = memo ? [memo] : [];
+      await query(
+        `UPDATE customers SET status=$1, updated_at=NOW()${memoUpdate} WHERE id=$2`,
+        [newStatus, c.customer_id, ...memoParams]
+      );
+    }
+
+    if (req.user.phone_id) await query(`UPDATE phones SET status='idle' WHERE id=$1`, [req.user.phone_id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Inbound matching ──
+app.post('/api/calls/inbound', auth, requireRole('agent'), async (req, res) => {
+  try {
+    const { phone_number } = req.body;
+    if (!phone_number) return res.status(400).json({ error: 'phone_number required' });
+    const cleaned = String(phone_number).replace(/[^0-9]/g, '');
+    const formatted = cleaned.length === 11
+      ? `${cleaned.slice(0, 3)}-${cleaned.slice(3, 7)}-${cleaned.slice(7)}`
+      : `${cleaned.slice(0, 3)}-${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
+
+    const cid = req.user.center_id;
+    const { rows } = await query(
+      `SELECT c.*, cl.title AS list_title FROM customers c
+        LEFT JOIN customer_lists cl ON cl.id=c.list_id
+        WHERE c.phone_number=$1 AND c.center_id=$2 LIMIT 1`,
+      [formatted, cid]
+    );
+    if (!rows.length) return res.json({ matched: false, phone: formatted });
+
+    const cust = rows[0];
+    const calls = await query(
+      `SELECT * FROM calls WHERE customer_id=$1 ORDER BY started_at DESC LIMIT 5`,
+      [cust.id]
+    );
+    const center = await query(`SELECT show_phone FROM centers WHERE id=$1`, [cid]);
+    const showPhone = center.rows[0]?.show_phone;
+    const masked = !showPhone && cust.phone_number
+      ? cust.phone_number.replace(/(\d{3})-(\d{4})-(\d{4})/, '$1-****-$3')
+      : cust.phone_number;
+
+    res.json({
+      matched: true,
+      customer: { ...cust, phone: masked, phone_raw: cust.phone_number },
+      last_call: calls.rows[0] || null,
+      call_count: calls.rows.length,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Stats ──
-app.get('/api/stats/:cid',auth(['center_admin','super_admin']),(req,res)=>{
-  const calls=DB.calls.filter(c=>c.center_id===+req.params.cid);
-  res.json({total_calls:calls.length,connected:calls.filter(c=>c.result==='connected').length,no_answer:calls.filter(c=>c.result==='no_answer').length,invalid:calls.filter(c=>c.result==='invalid').length,total_duration:calls.reduce((a,c)=>a+(c.duration_sec||0),0)});
+app.get('/api/stats/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const cid = +req.params.cid;
+    const { rows } = await query(`
+      SELECT COUNT(*)::int AS total_calls,
+             COUNT(*) FILTER (WHERE result IN ('connected','positive'))::int AS connected,
+             COUNT(*) FILTER (WHERE result='no_answer')::int AS no_answer,
+             COUNT(*) FILTER (WHERE result='invalid')::int AS invalid,
+             COALESCE(SUM(duration_sec),0)::int AS total_duration
+        FROM calls WHERE center_id=$1`, [cid]);
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Recordings ──
-app.get('/api/recordings/:cid',auth(['center_admin']),(req,res)=>{res.json([]);});
+// ── Recordings (placeholder) ──
+app.get('/api/recordings/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  res.json([]);
+});
 
-// ── Sample Test ──
-app.post('/api/test/start',auth(['center_admin']),(req,res)=>{
-  const cid=req.user.center_id;
-  const{title,customers}=req.body;
-  const lid=DB._nextId.customer_lists++;
-  const t=title||'샘플테스트';
-  const ags=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active).map(u=>u.agent_name);
-  
-  if(customers&&Array.isArray(customers)){
-    // Upload custom test data
-    const valid=[];
-    for(const cu of customers){
-      const chk=validatePhone(cu.phone||cu.phone_number);
-      if(chk.valid)valid.push({name:cu.name||null,phone:chk.formatted});
+// ── Sample test ──
+app.post('/api/test/start', auth, requireRole('center_admin'), async (req, res) => {
+  try {
+    const cid = req.user.center_id;
+    const { title, customers } = req.body;
+    const t = title || '샘플테스트';
+
+    const { rows: agentRows } = await query(
+      `SELECT agent_name FROM users WHERE center_id=$1 AND role='agent' AND agent_name IS NOT NULL ORDER BY agent_name`,
+      [cid]
+    );
+    const ags = agentRows.map(r => r.agent_name);
+
+    let valid = [];
+    if (customers && Array.isArray(customers)) {
+      for (const cu of customers) {
+        const chk = validatePhone(cu.phone || cu.phone_number);
+        if (chk.valid) valid.push({ name: cu.name || null, phone: chk.formatted });
+      }
+    } else {
+      for (let i = 0; i < 100; i++) {
+        valid.push({
+          name: 'Test' + (i + 1),
+          phone: `010-${String(2000 + Math.floor(i / 100)).padStart(4, '0')}-${String(i).padStart(4, '0')}`,
+        });
+      }
     }
-    DB.customer_lists.push({id:lid,center_id:cid,title:t,source:'Sample',is_test:1,total_count:valid.length,uploaded_at:new Date().toISOString().split('T')[0]});
-    valid.forEach((v,i)=>{DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:ags[i%ags.length],name:v.name,phone_number:v.phone,status:'pending',no_answer_count:0,memo:''});});
-    res.json({list_id:lid,total:valid.length,per_agent:Math.ceil(valid.length/ags.length),agents:ags});
-  }else{
-    // Default 100 test
-    DB.customer_lists.push({id:lid,center_id:cid,title:t,source:'Test',is_test:1,total_count:100,uploaded_at:new Date().toISOString().split('T')[0]});
-    for(let i=0;i<100;i++){DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:ags[i%ags.length],name:'Test'+(i+1),phone_number:'010-'+String(2000+Math.floor(i/100)).padStart(4,'0')+'-'+String(i).padStart(4,'0'),status:'pending',no_answer_count:0,memo:''});}
-    res.json({list_id:lid,total:100,per_agent:20,agents:ags});
+
+    const list = await query(
+      `INSERT INTO customer_lists (center_id, title, source, is_test, total_count) VALUES ($1, $2, 'Sample', true, $3) RETURNING id`,
+      [cid, t, valid.length]
+    );
+    const lid = list.rows[0].id;
+    for (let i = 0; i < valid.length; i++) {
+      const v = valid[i];
+      const ag = ags[i % ags.length];
+      await query(
+        `INSERT INTO customers (list_id, center_id, name, phone_number, assigned_agent) VALUES ($1, $2, $3, $4, $5)`,
+        [lid, cid, v.name, v.phone, ag]
+      );
+    }
+    res.json({ list_id: lid, total: valid.length, per_agent: Math.ceil(valid.length / ags.length), agents: ags });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/test/stop', auth, requireRole('center_admin'), async (req, res) => {
+  try {
+    const cid = req.user.center_id;
+    const { rows: tests } = await query(`SELECT id, title FROM customer_lists WHERE center_id=$1 AND is_test=true`, [cid]);
+    const results = [];
+    for (const t of tests) {
+      const { rows } = await query(`
+        SELECT
+          (SELECT COUNT(*) FROM customers WHERE list_id=$1)::int AS total,
+          (SELECT COUNT(*) FROM customers WHERE list_id=$1 AND status NOT IN ('pending','calling'))::int AS called,
+          (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=$1 AND c.result IN ('connected','positive'))::int AS connected,
+          (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=$1 AND c.result='no_answer')::int AS no_answer,
+          (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=$1 AND c.result='invalid')::int AS invalid,
+          (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=$1 AND c.result='positive')::int AS signup
+      `, [t.id]);
+      results.push({ list_id: t.id, title: t.title, ...rows[0] });
+    }
+    await query(`UPDATE customer_lists SET is_test=false WHERE center_id=$1 AND is_test=true`, [cid]);
+    res.json({ ok: true, results });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/test/status/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const cid = +req.params.cid;
+    const { rows } = await query(`
+      SELECT cl.id AS list_id, cl.title,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id)::int AS total,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status NOT IN ('pending','calling'))::int AS done,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='pending')::int AS remaining,
+        (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=cl.id AND c.result IN ('connected','positive'))::int AS connected,
+        (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=cl.id AND c.result='no_answer')::int AS no_answer,
+        (SELECT COUNT(*) FROM calls c JOIN customers cu ON cu.id=c.customer_id WHERE cu.list_id=cl.id AND c.result='invalid')::int AS invalid
+      FROM customer_lists cl WHERE cl.center_id=$1 AND cl.is_test=true`, [cid]);
+    rows.forEach(r => { r.progress = r.total > 0 ? Math.round((r.done / r.total) * 100) : 0; });
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── v8 routes ──
+app.use('/api/dist', distRouter);
+app.use('/api/sip', sipRouter);
+app.use('/api/classify', classifyRouter);
+app.use('/api/suppliers', suppliersRouter);
+app.use('/api/admin', adminRouter);
+
+// ── Static (SPA) ──
+app.use(express.static(join(__dirname, 'dist')));
+app.get('*', (req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')));
+
+// ── Bootstrap ──
+async function start() {
+  if (!process.env.DATABASE_URL) {
+    console.error('DATABASE_URL not set — exiting');
+    process.exit(1);
   }
-});
-// Sample test with file upload
-app.post('/api/test/upload-file',auth(['center_admin']),upload.single('file'),(req,res)=>{
-  if(!req.file)return res.status(400).json({error:'No file'});
-  const{title}=req.body;
-  let rows=[];
-  try{const wb=XLSX.read(req.file.buffer,{type:'buffer',codepage:65001,raw:true});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:'',raw:false});}
-  catch(e){return res.status(400).json({error:'Parse failed'});}
-  const cols=Object.keys(rows[0]||{});
-  const phoneCol=cols.find(c=>{try{return/phone|전화|번호|핸드폰|mobile|tel|연락처|hp|휴대/i.test(c)}catch{return false}})||cols[0];
-  const nameCol=cols.find(c=>{try{return/name|이름|성명|고객명/i.test(c)}catch{return false}})||null;
-  const customers=rows.map(r=>({phone:String(r[phoneCol]||''),name:nameCol?String(r[nameCol]||''):null}));
-  // Forward to test/start logic
-  req.body={title:title||'샘플테스트',customers};
-  const cid=req.user.center_id;
-  const ags=DB.users.filter(u=>u.role==='agent'&&u.center_id===cid&&u.is_active).map(u=>u.agent_name);
-  const valid=[];
-  for(const cu of customers){const chk=validatePhone(cu.phone);if(chk.valid)valid.push({name:cu.name,phone:chk.formatted});}
-  const lid=DB._nextId.customer_lists++;
-  DB.customer_lists.push({id:lid,center_id:cid,title:title||'샘플테스트',source:'Sample',is_test:1,total_count:valid.length,uploaded_at:new Date().toISOString().split('T')[0]});
-  valid.forEach((v,i)=>{DB.customers.push({id:DB._nextId.customers++,list_id:lid,center_id:cid,phone_id:null,agent_name:ags[i%ags.length],name:v.name,phone_number:v.phone,status:'pending',no_answer_count:0,memo:''});});
-  res.json({list_id:lid,total:valid.length,per_agent:Math.ceil(valid.length/ags.length)});
-});
-app.post('/api/test/stop',auth(['center_admin']),(req,res)=>{
-  const cid=req.user.center_id;
-  const testLists=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test);
-  const results=testLists.map(l=>{
-    const custs=DB.customers.filter(c=>c.list_id===l.id);
-    const calls=DB.calls.filter(c=>custs.some(cu=>cu.id===c.customer_id));
-    return{list_id:l.id,title:l.title,total:custs.length,called:custs.filter(c=>c.status!=='pending').length,
-      connected:calls.filter(c=>c.result==='connected'||c.result==='signup').length,
-      no_answer:calls.filter(c=>c.result==='no_answer').length,
-      invalid:calls.filter(c=>c.result==='invalid').length,
-      signup:calls.filter(c=>c.result==='signup').length};
-  });
-  // Keep results but mark test as done
-  testLists.forEach(l=>{l.is_test=2;}); // 2 = completed test
-  res.json({ok:true,results});
-});
-app.get('/api/test/status/:cid',auth(['center_admin']),(req,res)=>{
-  const cid=+req.params.cid;
-  const testLists=DB.customer_lists.filter(l=>l.center_id===cid&&l.is_test===1);
-  res.json(testLists.map(l=>{
-    const custs=DB.customers.filter(c=>c.list_id===l.id);
-    const calls=DB.calls.filter(c=>custs.some(cu=>cu.id===c.customer_id));
-    const done=custs.filter(c=>c.status!=='pending'&&c.status!=='calling').length;
-    return{list_id:l.id,title:l.title,total:custs.length,done,remaining:custs.filter(c=>c.status==='pending').length,
-      connected:calls.filter(c=>c.result==='connected'||c.result==='signup').length,
-      no_answer:calls.filter(c=>c.result==='no_answer').length,
-      invalid:calls.filter(c=>c.result==='invalid').length,
-      progress:custs.length>0?Math.round((done/custs.length)*100):0};
-  }));
+  await initDB();
+  startCron();
+  app.listen(PORT, '0.0.0.0', () => console.log(`TM Platform v8 on port ${PORT}`));
+}
+
+start().catch(err => {
+  console.error('Startup failed:', err);
+  process.exit(1);
 });
 
-// ── Static ──
-app.use(express.static(join(__dirname,'dist')));
-app.get('*',(req,res)=>res.sendFile(join(__dirname,'dist','index.html')));
-
-app.listen(PORT,'0.0.0.0',()=>console.log(`TM Platform on port ${PORT}`));
+process.on('SIGTERM', () => { stopCron(); process.exit(0); });
+process.on('SIGINT', () => { stopCron(); process.exit(0); });

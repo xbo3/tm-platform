@@ -1,4 +1,4 @@
-# TM Platform — 텔레마케팅 운영 플랫폼
+# TM Platform — 텔레마케팅 운영 플랫폼 (v8)
 
 ## 배포 정보
 
@@ -6,9 +6,68 @@
 |------|-----|
 | GitHub | https://github.com/xbo3/tm-platform |
 | Railway | https://tm-web-production.up.railway.app |
-| Stack | React + Vite + Express |
-| Font | Poppins (200~400) |
-| Theme | Glossy Black |
+| Stack | React 19 + Vite + Express + PostgreSQL |
+| Font | Pretendard + JetBrains Mono |
+| Theme | Dark (v13 디자인 토큰) |
+
+---
+
+## v8 변경 사항 (2026-04-19)
+
+### 데이터 영구화
+- **PostgreSQL 도입**: 기존 in-memory DB 를 Railway Postgres 로 전환. 서버 재시작에도 데이터 유지.
+- 마이그레이션 파일: `server/migrations/002_v8.sql` (idempotent, 자동 실행)
+
+### 스키마 확장
+- `customer_lists` 신규 컬럼: `category`, `supplier_tg`, `auto_connect`, `auto_connect_threshold`, `is_distributed`, `is_active`, `is_sip_prechecked`
+- `customers` status 확장: 기존 + `invalid_pre`, `dormant`, `recall`, `positive`. 신규 컬럼: `recall_at`, `recall_agent`, `dormant_since`
+- `calls.result` 확장: 기존 + `positive`, `reject`, `recall`
+- 신규 테이블: `sip_precheck_runs`, `distribution_events`, `call_classifications`, `suppliers`
+
+### 백엔드 신규 라우트
+- `POST /api/dist/preview` · `POST /api/dist/execute` — 5명 균등 분배 미리보기 + 확정
+- `POST /api/sip/precheck/:list_id` — SIP 결번 사전 거르기 (현재 mock 10%, VMGate 연동 TODO)
+- `POST /api/classify/:call_id` — 통화 분류 (현재 duration mock, Claude Haiku + STT 연동 TODO)
+- `GET/POST/PUT/DELETE /api/suppliers` — 공급자 텔레그램 ID CRUD (super_admin 전용)
+- `GET /api/admin/db-quality` · `/api/admin/supplier-rank` · `/api/admin/overview` — 슈퍼어드민 점수 (env 가중치)
+
+### 스케줄러 (`server/jobs.js`, node-cron)
+- 매 5분: 오토연결 — 활성 DB 잔여 < threshold 면 같은 카테고리 다음 DB 자동 분배
+- 매 10분: 휴면 승격 — `no_answer_count >= 3` 인 customer 를 `dormant`
+- 매 1시간: 녹음 만료 path 로그 (실제 삭제는 TODO)
+- 매일 23:00 UTC (08:00 KST): SIP precheck 자동 트리거 스켈레톤
+
+### 프론트 4뷰 분할
+- `src/views/AdminView.jsx` — 슈퍼어드민 (DB 품질 랭킹, 점수 공식 슬라이더, 공급자 관리, 최근 긍정)
+- `src/views/ManagerView.jsx` — 센터장 (Hero 2분할, 실장 테이블, DB 목록 + 분배 모달, 카테고리/공급자/오토연결)
+- `src/views/LeadMonitorView.jsx` — 실시간 상담원 라이브, 큐 잔여, 활성 DB
+- `src/views/AgentView.jsx` — 본인 큐, dialer, 결과 분류 (자동 classify 호출)
+- 상단 `<Topbar>` 가 role 별 view 탭 노출 (super_admin 만 4뷰 전환 가능)
+
+### 디자인 토큰 (`src/styles/tokens.css`)
+- v13 HTML `<style>` 의 CSS 변수 22개 전부 이관 (--bg, --text, --accent, --pos, --info, --mono, etc.)
+- Pretendard Variable + JetBrains Mono 로딩
+- 다크 테마 표준 컴포넌트 (`.card`, `.btn`, `.tag`, `.modal-overlay`)
+
+### 분배 확인 모달 (`src/components/DistributeModal.jsx`)
+- v13 `#distribute-modal` 마크업/동작을 React 로 포팅
+- `/api/dist/preview` 호출 → 5분할 표시 → 확인 시 `/api/dist/execute`
+
+### 환경 변수
+- `DATABASE_URL` (필수, Railway 자동 주입)
+- `JWT_SECRET` (선택, 기본값 있음)
+- `QUALITY_FORMULA_A` / `_B` / `_C` (점수 가중치, 기본 0.4/0.4/0.2)
+- `ANTHROPIC_API_KEY` (classify mock 단계라 미사용)
+
+### 다음 TODO
+- VMGate + SIP 서버 실제 결번 판별 연결 (`server/routes/sip.js`)
+- Claude Haiku + Whisper STT 연결 (`server/routes/classify.js`)
+- 녹음 파일 실제 삭제 + 7일 정책 (`server/jobs.js`)
+- 휴면 재활성화 정책 (방침 §12)
+- 카테고리 재분류 가능 여부 (방침 §12)
+- 실장 탭 / 상담원 탭 다이어트 (방침 §12)
+
+---
 
 ---
 
