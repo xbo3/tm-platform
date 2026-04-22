@@ -1,5 +1,11 @@
 import cron from 'node-cron';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { query } from './db.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const RECORDINGS_DIR = process.env.RECORDINGS_DIR || path.join(__dirname, '..', 'recordings');
 
 const tasks = [];
 
@@ -81,15 +87,36 @@ async function dormantPromotion() {
   }
 }
 
-// 매 1시간: 녹음 만료 정리 — 7일 이전 파일 path 로그만, 실제 삭제는 TODO
+// 매 1시간: 녹음 만료 정리 — 7일 이전 파일 실제 삭제 + DB row 제거
+// 방침 §7: 음성 파일 7일 보관 후 자동 삭제, STT 텍스트는 call_classifications 에 영구.
 async function recordingsCleanup() {
   try {
     const { rows } = await query(
-      `SELECT id, file_path FROM recordings WHERE expires_at IS NOT NULL AND expires_at < NOW() LIMIT 200`
+      `SELECT id, file_path FROM recordings WHERE expires_at IS NOT NULL AND expires_at < NOW() LIMIT 500`
     );
     if (rows.length === 0) return;
-    console.log(`[cron recordings] ${rows.length} expired files (path-only log; actual delete TODO)`);
-    // TODO: fs.unlink(file_path) + DELETE FROM recordings
+    let removed = 0, missing = 0;
+    for (const r of rows) {
+      const full = path.join(RECORDINGS_DIR, r.file_path || '');
+      try {
+        if (r.file_path && fs.existsSync(full)) {
+          fs.unlinkSync(full);
+          removed++;
+        } else {
+          missing++;
+        }
+      } catch (e) {
+        console.error(`[cron recordings] unlink ${full} failed:`, e.message);
+      }
+      // Delete DB row either way — expired rows shouldn't keep referencing
+      // files that may have been hand-deleted.
+      try {
+        await query(`DELETE FROM recordings WHERE id=$1`, [r.id]);
+      } catch (e) {
+        console.error(`[cron recordings] delete row ${r.id} failed:`, e.message);
+      }
+    }
+    console.log(`[cron recordings] expired=${rows.length} removed=${removed} missing=${missing}`);
   } catch (e) {
     console.error('[cron recordings] error:', e.message);
   }
