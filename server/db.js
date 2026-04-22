@@ -123,6 +123,14 @@ export async function initDB() {
     throw e;
   }
 
+  // Run ws-lock migration (commit 2)
+  try {
+    await runMigration('003_ws_lock.sql');
+  } catch (e) {
+    console.error('[migration] 003_ws_lock.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {

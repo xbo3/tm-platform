@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 import jwt from 'jsonwebtoken';
 import { parse as parseUrl } from 'url';
+import defaultPool from './db.js';
 
 const SECRET = process.env.JWT_SECRET || 'tm-platform-secret-2026';
 
@@ -38,7 +39,10 @@ function broadcastToAgent(agentId, payload) {
   return n;
 }
 
-export function attachWs(httpServer) {
+export function attachWs(httpServer, options = {}) {
+  // `pool` is injectable so smoke tests can substitute a mock without spinning
+  // up Postgres. Production path uses the default pg Pool from server/db.js.
+  const pool = options.pool || defaultPool;
   // Two endpoints share one HTTP server. Using `server:` option twice causes
   // upgrade-dispatch conflicts (both try to handle every upgrade), which
   // surfaces as RSV1 frame errors when a second socket opens. The stable
@@ -170,18 +174,106 @@ export function attachWs(httpServer) {
 
         case 'dial': {
           // Console asks the server to make its device dial a number.
-          // COMMIT (1) = pure relay. Mask-release + global lock lands in commit (2).
+          // This path atomically:
+          //   1. stamps customer.unmasked_at / unmasked_by and flips status='calling'
+          //      (first-writer-wins: any later dial on same customer gets already_locked)
+          //   2. blocks sibling records with the same phone_number globally
+          //      (reserved_blocked) so no other DB distributes this number again
+          //   3. creates a calls row and uses its id as the WS callId
+          //   4. forwards dial to the phone only after COMMIT succeeds
+          // See TM_보강_분배최종확정_20260422.md §3.
           const deviceId = msg.deviceId || user.phone_id;
           if (!deviceId) return safeSend(ws, { type: 'error', error: 'no deviceId' });
+          if (!msg.customer_id) {
+            // Strict path for commit (2): dial must be tied to a customer row so the
+            // lock has a subject. Ad-hoc phone-only dialing would bypass the lock
+            // (farm-risk) and is disabled.
+            return safeSend(ws, { type: 'error', error: 'customer_id required' });
+          }
           const device = devices.get(deviceId);
           if (!device || device.readyState !== device.OPEN) {
             return safeSend(ws, { type: 'error', error: 'device offline', deviceId });
           }
-          safeSend(device, {
-            type: 'dial',
-            callId: msg.callId || `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            phone: msg.phone,
-            customer_id: msg.customer_id || null,
+          if (!user.agent_name) {
+            return safeSend(ws, { type: 'error', error: 'agent_name missing in token' });
+          }
+
+          // Run the claim transaction on a single client so BEGIN..COMMIT is atomic.
+          pool.connect().then(async (client) => {
+            let released = false;
+            const release = () => { if (!released) { released = true; client.release(); } };
+            try {
+              await client.query('BEGIN');
+
+              // (1) first-writer-wins claim. unmasked_at IS NULL blocks re-claim.
+              const claim = await client.query(
+                `UPDATE customers
+                    SET unmasked_at = NOW(),
+                        unmasked_by = $1,
+                        status = 'calling',
+                        updated_at = NOW()
+                  WHERE id = $2
+                    AND unmasked_at IS NULL
+                RETURNING phone_number, center_id`,
+                [user.agent_name, msg.customer_id]
+              );
+              if (claim.rowCount === 0) {
+                await client.query('ROLLBACK');
+                release();
+                return safeSend(ws, {
+                  type: 'error',
+                  error: 'already_locked',
+                  customer_id: msg.customer_id,
+                });
+              }
+              const { phone_number, center_id } = claim.rows[0];
+
+              // (2) global sibling block: every other row with this phone is reserved_blocked.
+              await client.query(
+                `UPDATE customers
+                    SET status = 'reserved_blocked',
+                        updated_at = NOW()
+                  WHERE phone_number = $1
+                    AND id <> $2
+                    AND status IN ('pending', 'reserved')`,
+                [phone_number, msg.customer_id]
+              );
+
+              // (3) create calls row; id becomes the WS callId end-to-end.
+              const callRow = await client.query(
+                `INSERT INTO calls (customer_id, center_id, agent, phone_id, result, started_at)
+                 VALUES ($1, $2, $3, $4, NULL, NOW())
+                 RETURNING id`,
+                [msg.customer_id, center_id, user.agent_name, user.phone_id]
+              );
+              const callId = callRow.rows[0].id;
+
+              await client.query('COMMIT');
+              release();
+
+              // (4) forward to phone with the real phone_number (server-side trusted).
+              safeSend(device, {
+                type: 'dial',
+                callId,
+                phone: phone_number,
+                customer_id: msg.customer_id,
+              });
+              // echo to console so it can update UI optimistically
+              safeSend(ws, {
+                type: 'dial_started',
+                callId,
+                customer_id: msg.customer_id,
+                phone: phone_number,
+              });
+            } catch (err) {
+              try { await client.query('ROLLBACK'); } catch {}
+              release();
+              console.error('[ws:dial] tx error', err.message);
+              safeSend(ws, { type: 'error', error: 'dial_tx_failed', detail: err.message });
+            }
+          }).catch((err) => {
+            console.error('[ws:dial] pool.connect error', err.message);
+            safeSend(ws, { type: 'error', error: 'db_unavailable', detail: err.message });
           });
           break;
         }

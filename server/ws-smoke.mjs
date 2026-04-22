@@ -50,12 +50,10 @@ async function run() {
   check('console hello received', consoleMsgs.some((m) => m.type === 'hello' && m.role === 'console'));
   check('console notified device online (presence push)', consoleMsgs.some((m) => m.type === 'device_presence' && m.online === true));
 
-  // dial relay
-  consoleWs.send(JSON.stringify({ type: 'dial', phone: '010-1234-5678', callId: 'call-smoke-1' }));
-  await sleep(120);
-  check('device received dial command', deviceMsgs.some((m) => m.type === 'dial' && m.callId === 'call-smoke-1' && m.phone === '010-1234-5678'));
+  // NOTE: dial is covered by ws-lock-smoke.mjs (commit 2) since it now runs a
+  // DB transaction and needs a mock pool. This file tests WS-only relay paths.
 
-  // call_state ringing
+  // call_state ringing (device-originated, no DB involvement)
   device.send(JSON.stringify({ type: 'call_state', state: 'ringing', callId: 'call-smoke-1', duration: 0 }));
   await sleep(120);
   check('console received call_state ringing', consoleMsgs.some((m) => m.type === 'call_state' && m.state === 'ringing' && m.callId === 'call-smoke-1'));
