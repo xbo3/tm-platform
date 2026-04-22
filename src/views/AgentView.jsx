@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { get, post, put } from '../api.js';
 import { Led, Bar, Stat, fmtTime } from '../components/widgets.jsx';
+import { useConsoleWs } from '../hooks/useConsoleWs.js';
 
 const RESULT_OPTS = [
   { v: 'connected', label: '연결', color: 'var(--info)' },
@@ -25,7 +26,10 @@ export default function AgentView({ user }) {
   const [timer, setTimer] = useState(0);
   const [memo, setMemo] = useState('');
   const [recallTime, setRecallTime] = useState('');
+  const [wsErr, setWsErr] = useState(null);
   const tRef = useRef();
+  const curRef = useRef(null);
+  useEffect(() => { curRef.current = cur; }, [cur]);
 
   const refresh = async () => {
     try {
@@ -42,21 +46,74 @@ export default function AgentView({ user }) {
     return () => clearInterval(id);
   }, []);
 
+  // local clock ticks while the phone is in a live (connected) state.
+  // If the phone emits an authoritative duration on idle, we snap to that.
   useEffect(() => {
     if (callState === 'connected') tRef.current = setInterval(() => setTimer(p => p + 1), 1000);
     else clearInterval(tRef.current);
     return () => clearInterval(tRef.current);
   }, [callState]);
 
+  // WebSocket: receive real-time state from the phone
+  const onWsEvent = useCallback((msg) => {
+    switch (msg.type) {
+      case 'dial_started':
+        // Server confirmed the lock + created calls.id and forwarded to phone.
+        setCallId(msg.callId);
+        if (msg.phone && curRef.current) {
+          // phone_number from server is the trusted unmasked value.
+          setCur({ ...curRef.current, phone_number: msg.phone });
+        }
+        setCallState('ringing');
+        break;
+      case 'call_state':
+        if (msg.state === 'ringing') setCallState('ringing');
+        else if (msg.state === 'offhook') setCallState('connected');
+        else if (msg.state === 'idle') {
+          // stay 'connected' so the agent can still mark the result + memo,
+          // but snap timer to the authoritative duration_sec from the phone.
+          if (typeof msg.duration === 'number') setTimer(msg.duration);
+        }
+        break;
+      case 'dial_ack':
+        if (msg.ok === false) {
+          setWsErr(msg.error || 'dial_failed');
+          setCallState('idle');
+          setCur(null);
+          setCallId(null);
+        }
+        break;
+      case 'error':
+        setWsErr(msg.error || 'ws_error');
+        if (msg.error === 'already_locked' || msg.error === 'device offline' || msg.error === 'customer_id required') {
+          setCallState('idle');
+          setCur(null);
+          setCallId(null);
+        }
+        break;
+      default:
+        break;
+    }
+  }, []);
+  const { connected: wsConnected, deviceOnline, sendDial } = useConsoleWs({ onEvent: onWsEvent });
+
   const next = async () => {
+    setWsErr(null);
+    if (!wsConnected) { window.alert('서버 연결 끊김 — 재연결 시도 중'); return; }
+    if (!deviceOnline) { window.alert('폰이 오프라인 상태입니다'); return; }
     try {
       const c = await post('/calls/next', {});
       setCur(c);
-      setCallState('ringing');
       setTimer(0); setMemo(''); setRecallTime('');
-      const r = await post('/calls/start', { customer_id: c.id });
-      setCallId(r.call_id);
-      setTimeout(() => setCallState('connected'), 1200);
+      setCallState('ringing');
+      // Kick the phone via the WS dial path (atomic lock + calls.id assignment).
+      // callId will come back on the `dial_started` frame.
+      const ok = sendDial(c.id);
+      if (!ok) {
+        setWsErr('ws_send_failed');
+        setCallState('idle');
+        setCur(null);
+      }
     } catch (e) {
       window.alert('대기 없음');
     }
@@ -83,6 +140,26 @@ export default function AgentView({ user }) {
 
       {/* LEFT — 내 통계 + 팀 */}
       <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+        <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', fontSize: 11 }}>
+          <Led color={wsConnected ? 'var(--pos)' : 'var(--neg)'} size={6} />
+          <span style={{ color: 'var(--text-dim)' }}>서버</span>
+          <span style={{ fontWeight: 600, color: wsConnected ? 'var(--pos)' : 'var(--neg)' }}>
+            {wsConnected ? 'connected' : 'offline'}
+          </span>
+          <span style={{ color: 'var(--text-faint)' }}>·</span>
+          <Led color={deviceOnline ? 'var(--pos)' : 'var(--warn)'} size={6} />
+          <span style={{ color: 'var(--text-dim)' }}>폰</span>
+          <span style={{ fontWeight: 600, color: deviceOnline ? 'var(--pos)' : 'var(--warn)' }}>
+            {deviceOnline ? 'online' : 'waiting'}
+          </span>
+        </div>
+
+        {wsErr && (
+          <div className="card" style={{ padding: '7px 10px', fontSize: 11, background: 'var(--neg-soft)', color: 'var(--neg)' }}>
+            ⚠ {wsErr}
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
           <Stat label="콜" value={s.total_calls} color="var(--info)" />
