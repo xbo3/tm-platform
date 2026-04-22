@@ -1,4 +1,5 @@
 import express from 'express';
+import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import bcrypt from 'bcryptjs';
@@ -11,6 +12,7 @@ import XLSX from 'xlsx';
 
 import { query, initDB } from './server/db.js';
 import { auth, requireRole, generateToken } from './server/auth.js';
+import { attachWs } from './server/ws.js';
 
 // v8 routes
 import distRouter from './server/routes/dist.js';
@@ -739,12 +741,22 @@ async function start() {
       if (e.stack) console.error('[boot] stack:', e.stack);
     }
   }
-  app.listen(PORT, '0.0.0.0', () => console.log(`TM Platform v8 on port ${PORT}${bootError ? ' (DEGRADED)' : ''}`));
+  const httpServer = createServer(app);
+  const ws = attachWs(httpServer);
+  app.locals.ws = ws;
+
+  httpServer.listen(PORT, '0.0.0.0', () =>
+    console.log(`TM Platform v8 on port ${PORT}${bootError ? ' (DEGRADED)' : ''} · ws: /ws/device /ws/console`)
+  );
 }
 
 start().catch(err => {
   console.error('Startup crashed:', err);
 });
 
-process.on('SIGTERM', () => { stopCron(); process.exit(0); });
-process.on('SIGINT', () => { stopCron(); process.exit(0); });
+function shutdown() {
+  stopCron();
+  process.exit(0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
