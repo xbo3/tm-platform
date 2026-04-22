@@ -8,6 +8,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import java.io.File
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import android.view.Gravity
 import android.view.ViewGroup.LayoutParams
 import android.widget.Button
@@ -41,6 +46,10 @@ class MainActivity : AppCompatActivity() {
 
     private var ws: WsClient? = null
     private var tracker: CallTracker? = null
+    private var recorder: Recorder? = null
+    private val uploadHttp = OkHttpClient.Builder()
+        .callTimeout(60, TimeUnit.SECONDS)
+        .build()
     private val main = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -107,6 +116,42 @@ class MainActivity : AppCompatActivity() {
         ws = null
         tracker?.unregister()
         tracker = null
+        try { recorder?.stop()?.delete() } catch (_: Exception) {}
+        recorder = null
+    }
+
+    private fun uploadRecording(callId: Int, file: File) {
+        val prefs = Prefs.get(this)
+        val server = prefs.getString(Prefs.KEY_SERVER_URL, null) ?: return
+        val token = prefs.getString(Prefs.KEY_TOKEN, null) ?: return
+
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file",
+                file.name,
+                RequestBody.create("audio/mp4".toMediaTypeOrNull(), file)
+            )
+            .build()
+        val req = Request.Builder()
+            .url("${server.trimEnd('/')}/api/recordings/$callId")
+            .header("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+
+        uploadHttp.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.w("bicall", "rec upload fail: ${e.message}")
+                log("rec upload FAIL · ${e.message}")
+            }
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    val ok = response.isSuccessful
+                    log("rec upload ${if (ok) "ok" else "FAIL ${response.code}"} · ${file.length()}B")
+                    file.delete()
+                }
+            }
+        })
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -125,6 +170,7 @@ class MainActivity : AppCompatActivity() {
         val needed = arrayOf(
             Manifest.permission.CALL_PHONE,
             Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.RECORD_AUDIO,
         ).filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isEmpty()) startSession()
         else ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMS_REQ)
@@ -138,13 +184,30 @@ class MainActivity : AppCompatActivity() {
             logoutAndExit(); return
         }
 
+        recorder = Recorder(this)
+
         tracker = CallTracker(this) { ev ->
             when (ev) {
                 is CallTracker.Event.Ringing -> emitCallState(ev.callId, "ringing", 0)
-                is CallTracker.Event.Offhook -> emitCallState(ev.callId, "offhook", 0)
+                is CallTracker.Event.Offhook -> {
+                    // Start recording once the call is actually connected; MIC source
+                    // captures the agent's side reliably on every OEM.
+                    val started = recorder?.start(ev.callId) != null
+                    log("offhook · rec=${if (started) "on" else "off"}")
+                    emitCallState(ev.callId, "offhook", 0)
+                }
                 is CallTracker.Event.Idle -> {
+                    val file = recorder?.stop()
                     emitCallState(ev.callId, "idle", ev.durationSec)
                     log("idle · duration=${ev.durationSec}s · callId=${ev.callId}")
+                    // Best-effort upload, then delete local file. Happens off the main thread.
+                    val callIdInt = (ev.callId as? Number)?.toInt()
+                        ?: (ev.callId as? String)?.toIntOrNull()
+                    if (file != null && file.length() > 0 && callIdInt != null) {
+                        uploadRecording(callIdInt, file)
+                    } else {
+                        file?.delete()
+                    }
                 }
             }
         }.also { it.register() }

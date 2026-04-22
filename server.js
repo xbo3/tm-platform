@@ -623,9 +623,107 @@ app.get('/api/stats/:cid', auth, requireRole('center_admin', 'super_admin'), asy
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Recordings (placeholder) ──
+// ── Recordings ──
+// Files land on disk at RECORDINGS_DIR (default ./recordings). DB row holds
+// the relative path + 7-day expires_at per 방침 §7 (음성 7일 후 자동 삭제).
+// Cron job in server/jobs.js is responsible for actually removing expired files.
+import fs from 'fs';
+const RECORDINGS_DIR = process.env.RECORDINGS_DIR || join(__dirname, 'recordings');
+try { fs.mkdirSync(RECORDINGS_DIR, { recursive: true }); } catch {}
+
+const recUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => cb(null, RECORDINGS_DIR),
+    filename: (req, file, cb) => {
+      const callId = +req.params.call_id || 0;
+      const ext = (file.originalname.match(/\.[a-z0-9]+$/i)?.[0] || '.m4a').toLowerCase();
+      cb(null, `call_${callId}_${Date.now()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB per recording
+});
+
+// Device uploads its local recording once the call ends.
+// Accepts agent role (device is an agent's phone). Center_admin/super_admin
+// may also upload via admin tooling if needed.
+app.post(
+  '/api/recordings/:call_id',
+  auth,
+  requireRole('agent', 'center_admin', 'super_admin'),
+  recUpload.single('file'),
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'file field required' });
+      const callId = +req.params.call_id;
+      const call = await query('SELECT id, center_id, agent FROM calls WHERE id=$1', [callId]);
+      if (call.rows.length === 0) return res.status(404).json({ error: 'call not found' });
+
+      // Scope check: agent may only upload recordings for their own calls.
+      if (req.user.role === 'agent' && call.rows[0].agent !== req.user.agent_name) {
+        // delete stray file to avoid orphan
+        try { fs.unlinkSync(req.file.path); } catch {}
+        return res.status(403).json({ error: 'not your call' });
+      }
+
+      const rel = req.file.filename;  // store filename only; dir known by server
+      const { rows } = await query(
+        `INSERT INTO recordings (call_id, file_path, file_size, created_at, expires_at)
+         VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '7 days')
+         RETURNING id, file_path, expires_at`,
+        [callId, rel, req.file.size]
+      );
+      res.json({ ok: true, recording: rows[0] });
+    } catch (e) {
+      console.error('[recordings] upload error', e);
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// Center-side listing (original placeholder; now backed by real rows).
 app.get('/api/recordings/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
-  res.json([]);
+  try {
+    const cid = +req.params.cid;
+    const { rows } = await query(
+      `SELECT r.id, r.call_id, r.file_path, r.file_size, r.created_at, r.expires_at,
+              c.agent, c.duration_sec, c.started_at, c.result,
+              cu.name AS customer_name, cu.phone_number
+         FROM recordings r
+         JOIN calls c ON c.id = r.call_id
+         LEFT JOIN customers cu ON cu.id = c.customer_id
+        WHERE c.center_id = $1
+        ORDER BY r.created_at DESC
+        LIMIT 200`,
+      [cid]
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Stream an individual recording (center/super only). Returns 410 on expired.
+app.get('/api/recordings/file/:id', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const id = +req.params.id;
+    const { rows } = await query(
+      `SELECT r.file_path, r.expires_at, c.center_id
+         FROM recordings r JOIN calls c ON c.id = r.call_id
+        WHERE r.id = $1`, [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'not found' });
+    const row = rows[0];
+    if (req.user.role === 'center_admin' && row.center_id !== req.user.center_id) {
+      return res.status(403).json({ error: 'wrong center' });
+    }
+    if (row.expires_at && new Date(row.expires_at) < new Date()) {
+      return res.status(410).json({ error: 'expired' });
+    }
+    const full = join(RECORDINGS_DIR, row.file_path);
+    if (!fs.existsSync(full)) return res.status(404).json({ error: 'file missing' });
+    res.sendFile(full);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── Sample test ──
