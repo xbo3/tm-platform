@@ -10,6 +10,15 @@ const isInternalDb = (process.env.DATABASE_URL || '').includes('.railway.interna
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: (process.env.NODE_ENV === 'production' && !isInternalDb) ? { rejectUnauthorized: false } : false,
+  // 연결 풀 안정성 — Railway Postgres 재시작 / idle conn 대비
+  idleTimeoutMillis: 30000,        // 30초 idle 후 close
+  connectionTimeoutMillis: 5000,   // 5초 연결 타임아웃
+  max: 10,                         // 동시 연결 상한
+});
+
+// 풀 에러 글로벌 핸들러 — 미처리 시 프로세스 죽음
+pool.on('error', (err) => {
+  console.error('[db] pool error:', err.code, err.message);
 });
 
 export const query = (text, params) => pool.query(text, params);

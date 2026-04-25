@@ -68,15 +68,29 @@ router.post('/distribute', auth, role('center_admin'), async (req, res) => {
 });
 
 // List customers for center (with filters)
+// 보안: agent 역할은 본인 큐(assigned_agent==본인)만 조회 가능. 다른 실장 큐 누설 방지.
 router.get('/', auth, async (req, res) => {
   try {
     const cid = req.user.center_id;
-    const { status, agent, list_id, limit = 100, offset = 0 } = req.query;
+    const role = req.user.role;
+    // limit clamp — 페이징 DoS 방어 (1000 행 상한)
+    const limit = Math.min(parseInt(req.query.limit) || 100, 1000);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const { status, agent, list_id } = req.query;
+
     let sql = 'SELECT c.*, cl.title as list_title FROM customers c LEFT JOIN customer_lists cl ON c.list_id=cl.id WHERE c.center_id=$1';
     const params = [cid];
     let pi = 2;
+    // ⭐ Agent isolation: agent 는 자기 assigned_agent 큐만 조회 가능
+    if (role === 'agent') {
+      sql += ` AND c.assigned_agent=$${pi++}`;
+      params.push(req.user.agent_name);
+    } else if (agent) {
+      // 비-agent 역할만 agent 필터로 다른 사람 큐 조회 가능
+      sql += ` AND c.assigned_agent=$${pi++}`;
+      params.push(agent);
+    }
     if (status) { sql += ` AND c.status=$${pi++}`; params.push(status); }
-    if (agent) { sql += ` AND c.assigned_agent=$${pi++}`; params.push(agent); }
     if (list_id) { sql += ` AND c.list_id=$${pi++}`; params.push(list_id); }
     sql += ` ORDER BY c.id DESC LIMIT $${pi++} OFFSET $${pi}`;
     params.push(limit, offset);
@@ -84,16 +98,34 @@ router.get('/', auth, async (req, res) => {
     // Mask phone if center setting
     const center = await query('SELECT show_phone FROM centers WHERE id=$1', [cid]);
     if (!center.rows[0]?.show_phone) {
-      rows.forEach(r => { r.phone_number = r.phone_number.replace(/(\d{3})-?(\d{4})-?(\d{4})/, '$1-****-$3'); });
+      rows.forEach(r => {
+        if (r.phone_number) {
+          r.phone_number = r.phone_number.replace(/(\d{3})-?(\d{4})-?(\d{4})/, '$1-****-$3');
+        }
+      });
     }
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Update customer status
+// Update customer status — center_id + agent ownership 검증 필수
 router.put('/:id', auth, async (req, res) => {
   try {
     const { status, memo, no_answer_count } = req.body;
+    const cid = req.user.center_id;
+    const role = req.user.role;
+    // 1) 대상 고객이 내 센터 소속인지 확인 (cross-center 차단)
+    const target = await query('SELECT center_id, assigned_agent FROM customers WHERE id=$1', [req.params.id]);
+    if (target.rows.length === 0) {
+      return res.status(404).json({ error: 'customer not found' });
+    }
+    if (target.rows[0].center_id !== cid) {
+      return res.status(403).json({ error: 'cross-center access denied' });
+    }
+    // 2) agent 는 자기 큐 고객만 수정 가능
+    if (role === 'agent' && target.rows[0].assigned_agent !== req.user.agent_name) {
+      return res.status(403).json({ error: 'not your customer' });
+    }
     const { rows } = await query(
       `UPDATE customers SET status=COALESCE($1,status), memo=COALESCE($2,memo),
        no_answer_count=COALESCE($3,no_answer_count), updated_at=NOW() WHERE id=$4 RETURNING *`,
