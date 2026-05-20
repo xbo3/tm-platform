@@ -278,6 +278,38 @@ export function attachWs(httpServer, options = {}) {
           break;
         }
 
+        case 'manual_dial': {
+          // Operator types a phone number directly — 테스트용, customer_lists 큐 우회.
+          // Bypasses the customer-row lock (no farm-risk since manual = one click).
+          // Creates a calls row with customer_id=NULL (manual dial marker).
+          // Allowed for agent/center_admin/super_admin.
+          if (!['agent', 'center_admin', 'super_admin'].includes(user.role)) {
+            return safeSend(ws, { type: 'error', error: 'forbidden' });
+          }
+          const deviceId = msg.deviceId || user.phone_id;
+          if (!deviceId) return safeSend(ws, { type: 'error', error: 'no deviceId' });
+          const phone = String(msg.phone || '').trim();
+          const digits = phone.replace(/[^0-9*#]/g, '');
+          if (digits.length < 7) return safeSend(ws, { type: 'error', error: 'invalid phone' });
+          const device = devices.get(deviceId);
+          if (!device || device.readyState !== device.OPEN) {
+            return safeSend(ws, { type: 'error', error: 'device offline', deviceId });
+          }
+          pool.query(
+            `INSERT INTO calls (customer_id, center_id, agent, phone_id, result, started_at)
+             VALUES (NULL, $1, $2, $3, NULL, NOW()) RETURNING id`,
+            [user.center_id || null, user.agent_name || null, user.phone_id || null]
+          ).then(({ rows }) => {
+            const callId = rows[0].id;
+            safeSend(device, { type: 'dial', callId, phone: digits, customer_id: null, manual: true });
+            safeSend(ws, { type: 'dial_started', callId, phone: digits, customer_id: null, manual: true });
+          }).catch((err) => {
+            console.error('[ws:manual_dial] err', err.message);
+            safeSend(ws, { type: 'error', error: 'manual_dial_failed', detail: err.message });
+          });
+          break;
+        }
+
         case 'hangup': {
           const deviceId = msg.deviceId || user.phone_id;
           const device = deviceId ? devices.get(deviceId) : null;

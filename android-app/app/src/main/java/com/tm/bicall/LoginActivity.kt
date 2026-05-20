@@ -16,8 +16,9 @@ import java.io.IOException
 
 /**
  * Login screen.
- * Server URL + email + password → POST /api/auth/login → store JWT + identity → MainActivity.
- * If already logged in, skips straight to MainActivity.
+ * Flavor builds embed SERVER_URL/DEFAULT_EMAIL/DEFAULT_PASSWORD via BuildConfig
+ * so the agent never types anything — the launcher auto-logs in. If those fields
+ * are empty (defaultConfig) or the auto-login fails, fall back to the manual form.
  */
 class LoginActivity : AppCompatActivity() {
 
@@ -31,6 +32,52 @@ class LoginActivity : AppCompatActivity() {
             return
         }
 
+        val seedEmail = BuildConfig.DEFAULT_EMAIL
+        val seedPassword = BuildConfig.DEFAULT_PASSWORD
+        val seedServer = BuildConfig.SERVER_URL
+        if (seedEmail.isNotEmpty() && seedPassword.isNotEmpty() && seedServer.isNotEmpty()) {
+            renderAutoLogin(seedServer, seedEmail, seedPassword)
+        } else {
+            renderManualForm()
+        }
+    }
+
+    private fun renderAutoLogin(server: String, email: String, pw: String) {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 96, 48, 48)
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        setContentView(ScrollView(this).apply { addView(root) })
+
+        TextView(this).apply {
+            text = "bicall · ${BuildConfig.AGENT_LETTER} 단말"
+            textSize = 26f
+            setPadding(0, 0, 0, 24)
+            gravity = Gravity.CENTER_HORIZONTAL
+        }.also(root::addView)
+
+        val status = TextView(this).apply {
+            text = "자동 로그인 중..."
+            textSize = 16f
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 16, 0, 24)
+        }
+        root.addView(status)
+
+        doLogin(server.trimEnd('/'), email, pw, status) { ok ->
+            if (ok) {
+                runOnUiThread { goMain() }
+            } else {
+                runOnUiThread {
+                    Toast.makeText(this, "자동 로그인 실패 — 수동 입력으로 전환", Toast.LENGTH_LONG).show()
+                    renderManualForm(server, email)
+                }
+            }
+        }
+    }
+
+    private fun renderManualForm(prefillServer: String? = null, prefillEmail: String? = null) {
         val prefs = Prefs.get(this)
 
         val root = LinearLayout(this).apply {
@@ -48,14 +95,14 @@ class LoginActivity : AppCompatActivity() {
         val serverEdit = EditText(this).apply {
             hint = "서버 주소 (예: https://tm-web-production.up.railway.app)"
             inputType = InputType.TYPE_TEXT_VARIATION_URI
-            setText(prefs.getString(Prefs.KEY_SERVER_URL, "") ?: "")
+            setText(prefillServer ?: prefs.getString(Prefs.KEY_SERVER_URL, BuildConfig.SERVER_URL) ?: "")
         }
         root.addView(serverEdit)
 
         val emailEdit = EditText(this).apply {
             hint = "이메일 (agenta@tm.co.kr)"
             inputType = InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
-            setText(prefs.getString(Prefs.KEY_EMAIL, "") ?: "")
+            setText(prefillEmail ?: prefs.getString(Prefs.KEY_EMAIL, BuildConfig.DEFAULT_EMAIL) ?: "")
         }
         root.addView(emailEdit)
 

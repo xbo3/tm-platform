@@ -1,3 +1,42 @@
--e node_modules/
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Vite build output
+dist/
+
+# Local DBs / data
 data.json
 tm.db*
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Android Studio / Gradle
+android-app/build/
+android-app/.gradle/
+android-app/gradle/
+android-app/gradlew
+android-app/gradlew.bat
+android-app/local.properties
+android-app/app/build/
+android-app/app/release/
+android-app/captures/
+android-app/.idea/
+android-app/*.iml
+**/.cxx/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

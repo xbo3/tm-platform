@@ -27,6 +27,7 @@ export default function AgentView({ user }) {
   const [memo, setMemo] = useState('');
   const [recallTime, setRecallTime] = useState('');
   const [wsErr, setWsErr] = useState(null);
+  const [dialInput, setDialInput] = useState('');
   const tRef = useRef();
   const curRef = useRef(null);
   useEffect(() => { curRef.current = cur; }, [cur]);
@@ -60,7 +61,10 @@ export default function AgentView({ user }) {
       case 'dial_started':
         // Server confirmed the lock + created calls.id and forwarded to phone.
         setCallId(msg.callId);
-        if (msg.phone && curRef.current) {
+        if (msg.manual) {
+          // Manual dial: no cur from queue — synthesize one so the UI can render.
+          setCur({ id: null, name: '수동 발신', phone_number: msg.phone, manual: true });
+        } else if (msg.phone && curRef.current) {
           // phone_number from server is the trusted unmasked value.
           setCur({ ...curRef.current, phone_number: msg.phone });
         }
@@ -95,7 +99,28 @@ export default function AgentView({ user }) {
         break;
     }
   }, []);
-  const { connected: wsConnected, deviceOnline, sendDial } = useConsoleWs({ onEvent: onWsEvent });
+  const { connected: wsConnected, deviceOnline, sendDial, sendManualDial } = useConsoleWs({ onEvent: onWsEvent });
+
+  const dialManual = () => {
+    setWsErr(null);
+    if (!wsConnected) { window.alert('서버 연결 끊김 — 재연결 시도 중'); return; }
+    if (!deviceOnline) { window.alert('폰이 오프라인 상태입니다'); return; }
+    const digits = dialInput.replace(/[^0-9*#]/g, '');
+    if (digits.length < 3) { window.alert('번호를 3자리 이상 입력하세요'); return; }
+    setCallState('ringing');
+    const ok = sendManualDial(digits);
+    if (!ok) {
+      setWsErr('ws_send_failed');
+      setCallState('idle');
+    } else {
+      setTimer(0); setMemo(''); setRecallTime('');
+      setDialInput('');
+    }
+  };
+
+  const dialKey = (k) => setDialInput(p => (p + k).slice(0, 20));
+  const dialBack = () => setDialInput(p => p.slice(0, -1));
+  const dialClear = () => setDialInput('');
 
   const next = async () => {
     setWsErr(null);
@@ -210,10 +235,10 @@ export default function AgentView({ user }) {
       </div>
 
       {/* CENTER — Dialer */}
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, overflowY: 'auto' }}>
 
         {callState === 'idle' && (
-          <div style={{ textAlign: 'center' }}>
+          <div style={{ textAlign: 'center', width: '100%', maxWidth: 340 }}>
             <div style={{ fontSize: 12, color: 'var(--text-faint)', marginBottom: 16, letterSpacing: '0.05em' }}>READY</div>
             <button onClick={next} style={{
               width: 160, height: 160, borderRadius: '50%',
@@ -221,7 +246,111 @@ export default function AgentView({ user }) {
               color: 'var(--info)', fontSize: 16, fontWeight: 600, cursor: 'pointer',
               transition: 'all 0.2s',
             }}>NEXT CALL</button>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 14 }}>대기 {s.pending}건</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 14, marginBottom: 22 }}>대기 {s.pending}건</div>
+
+            <div style={{
+              borderTop: '1px solid var(--border-soft)',
+              paddingTop: 18,
+              marginTop: 4,
+            }}>
+              <div style={{
+                fontSize: 10, color: 'var(--text-faint)',
+                letterSpacing: '0.1em', marginBottom: 10,
+              }}>수동 발신 (다이얼패드)</div>
+
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '8px 10px',
+                background: 'var(--bg)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                marginBottom: 10,
+              }}>
+                <input
+                  value={dialInput}
+                  onChange={e => setDialInput(e.target.value.replace(/[^0-9*#]/g, '').slice(0, 20))}
+                  placeholder="010-XXXX-XXXX"
+                  className="mono"
+                  style={{
+                    flex: 1, fontSize: 16, letterSpacing: '0.05em',
+                    background: 'transparent', border: 'none', outline: 'none',
+                    color: 'var(--text)', textAlign: 'center',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={dialBack}
+                  style={{
+                    width: 28, height: 28, padding: 0,
+                    border: '1px solid var(--border)',
+                    background: 'transparent', borderRadius: 4,
+                    color: 'var(--text-dim)', fontSize: 14, cursor: 'pointer',
+                  }}
+                  title="지우기 (한 자리)"
+                >⌫</button>
+              </div>
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: 6,
+                marginBottom: 10,
+              }}>
+                {['1','2','3','4','5','6','7','8','9','*','0','#'].map(k => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => dialKey(k)}
+                    className="mono"
+                    style={{
+                      padding: '10px 0',
+                      fontSize: 18, fontWeight: 600,
+                      background: 'var(--bg)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      color: 'var(--text)',
+                      cursor: 'pointer',
+                    }}
+                  >{k}</button>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={dialClear}
+                  style={{
+                    width: 64,
+                    padding: '9px 0',
+                    fontSize: 12,
+                    background: 'transparent',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    color: 'var(--text-dim)',
+                    cursor: 'pointer',
+                  }}
+                >전체 지움</button>
+                <button
+                  type="button"
+                  onClick={dialManual}
+                  disabled={dialInput.replace(/[^0-9*#]/g, '').length < 3}
+                  style={{
+                    flex: 1,
+                    padding: '9px 0',
+                    fontSize: 14, fontWeight: 600,
+                    background: dialInput.replace(/[^0-9*#]/g, '').length >= 3 ? 'var(--pos)' : 'var(--pos-soft)',
+                    border: '1px solid var(--pos)',
+                    borderRadius: 6,
+                    color: dialInput.replace(/[^0-9*#]/g, '').length >= 3 ? '#fff' : 'var(--pos)',
+                    cursor: dialInput.replace(/[^0-9*#]/g, '').length >= 3 ? 'pointer' : 'not-allowed',
+                  }}
+                >발신</button>
+              </div>
+
+              <div style={{
+                fontSize: 10, color: 'var(--text-faint)', marginTop: 10,
+              }}>* 큐 우회 — 임의 번호 테스트용. customer_id 없음.</div>
+            </div>
           </div>
         )}
 

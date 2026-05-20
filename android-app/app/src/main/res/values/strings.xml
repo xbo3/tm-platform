@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">bicall</string>
+    <!-- app_name is provided per productFlavor via resValue in app/build.gradle.kts -->
 </resources>

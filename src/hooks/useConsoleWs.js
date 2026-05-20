@@ -89,10 +89,17 @@ export function useConsoleWs({ onEvent } = {}) {
       send({ type: 'dial', customer_id: customerId, deviceId: explicitDeviceId }),
     [send]
   );
+  // Manual dial — operator types a phone number directly (테스트용, 큐 우회).
+  // Bypasses customer-row lock. Server creates a calls row with customer_id=NULL.
+  const sendManualDial = useCallback(
+    (phone, { deviceId: explicitDeviceId } = {}) =>
+      send({ type: 'manual_dial', phone, deviceId: explicitDeviceId }),
+    [send]
+  );
   const sendHangup = useCallback(
     (callId) => send({ type: 'hangup', callId }),
     [send]
   );
 
-  return { connected, deviceOnline, deviceId, lastError, sendDial, sendHangup, send };
+  return { connected, deviceOnline, deviceId, lastError, sendDial, sendManualDial, sendHangup, send };
 }
