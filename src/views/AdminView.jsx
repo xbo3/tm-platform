@@ -9,6 +9,7 @@ export default function AdminView() {
   const [recent, setRecent] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [newSupplier, setNewSupplier] = useState('');
+  const [centerPhones, setCenterPhones] = useState([]);
 
   // localStorage UI 가중치 (백엔드 env 가 진실; UI 는 비공개 슬라이더 의도)
   const [weights, setWeights] = useState(() => {
@@ -33,10 +34,21 @@ export default function AdminView() {
     } catch (e) { console.error(e); }
   };
 
+  // Phone presence ticks every 5s (faster than the 15s heavy refresh) so the
+  // green/red LED on each agent reflects reality without spamming heavy queries.
+  const refreshPhones = async () => {
+    try {
+      const cp = await get('/admin/center-phones');
+      setCenterPhones(cp);
+    } catch (e) { console.error('center-phones', e); }
+  };
+
   useEffect(() => {
     refresh();
+    refreshPhones();
     const t = setInterval(refresh, 15000);
-    return () => clearInterval(t);
+    const t2 = setInterval(refreshPhones, 5000);
+    return () => { clearInterval(t); clearInterval(t2); };
   }, []);
 
   const addSupplier = async () => {
@@ -79,6 +91,63 @@ export default function AdminView() {
         <Stat label="총 콜" value={overview.reduce((s, c) => s + +c.total_calls, 0).toLocaleString()} color="var(--text)" />
         <Stat label="연결" value={overview.reduce((s, c) => s + +c.connected, 0).toLocaleString()} color="var(--pos)" />
         <Stat label="긍정" value={overview.reduce((s, c) => s + +c.positive, 0).toLocaleString()} color="var(--accent)" />
+      </div>
+
+      {/* 전체 센터 · 폰 라이브 상태 */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>전체 센터 · 폰 라이브 상태</span>
+          <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+            {centerPhones.length} 센터 · {centerPhones.reduce((s, c) => s + c.agents.length, 0)} 실장 ·
+            {' '}{centerPhones.reduce((s, c) => s + c.agents.filter(a => a.ws_online).length, 0)} online
+            <span className="mono" style={{ marginLeft: 6 }}>· 5s</span>
+          </span>
+        </div>
+        {centerPhones.length === 0 && (
+          <div style={{ color: 'var(--text-dim)', fontSize: 11, padding: '12px 0' }}>센터 데이터 없음</div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {centerPhones.map(c => {
+            const onlineCount = c.agents.filter(a => a.ws_online).length;
+            return (
+              <div key={c.center_id} style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>{c.center_name}</span>
+                  {!c.is_active && <span className="tag" style={{ background: 'var(--neg-soft)', color: 'var(--neg)' }}>정지</span>}
+                  <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+                    {onlineCount}/{c.agents.length} online
+                  </span>
+                </div>
+                {c.agents.length === 0 && (
+                  <div style={{ fontSize: 10, color: 'var(--text-faint)', paddingLeft: 12 }}>등록된 실장 없음</div>
+                )}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
+                  {c.agents.map(a => {
+                    const color = !a.is_active
+                      ? 'var(--text-faint)'
+                      : a.ws_online ? 'var(--pos)' : 'var(--neg)';
+                    return (
+                      <div key={a.user_id} style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '6px 10px',
+                        background: 'var(--bg)',
+                        border: '1px solid var(--border-soft)',
+                        borderRadius: 6,
+                      }}>
+                        <Led color={color} size={7} pulse={a.is_active && a.ws_online} />
+                        <span className="mono" style={{ fontSize: 11, fontWeight: 600, width: 36 }}>{a.agent_name || '?'}</span>
+                        <span style={{ flex: 1, fontSize: 11, color: a.is_active ? 'var(--text)' : 'var(--text-faint)' }}>
+                          {a.name || '(이름 없음)'}
+                        </span>
+                        {!a.is_active && <span className="tag" style={{ fontSize: 9 }}>정지</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* 점수 공식 (비공개 슬라이더) */}

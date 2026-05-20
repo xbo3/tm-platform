@@ -11,6 +11,15 @@ const SECRET = process.env.JWT_SECRET || 'tm-platform-secret-2026';
 const devices = new Map();       // deviceId (users.phone_id) -> WebSocket
 const consoles = new Map();      // agentId  (users.id)       -> Set<WebSocket>
 
+// Presence read-out for HTTP routes (admin.js center-phones endpoint).
+// Caller passes a numeric phone_id; we look up the live socket and verify it's
+// still OPEN (close events may race with the GET handler).
+export function isDeviceOnline(deviceId) {
+  if (deviceId == null) return false;
+  const ws = devices.get(deviceId);
+  return !!(ws && ws.readyState === ws.OPEN);
+}
+
 function authFromRequest(req) {
   const { query } = parseUrl(req.url || '', true);
   const token = query?.token || (req.headers.authorization || '').replace('Bearer ', '');

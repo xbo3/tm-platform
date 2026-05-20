@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { auth, requireRole } from '../auth.js';
+import { isDeviceOnline } from '../ws.js';
 
 const router = Router();
 
@@ -139,6 +140,52 @@ router.get('/recent-positives', auth, requireRole('super_admin'), async (req, re
       [limit]
     );
     res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/admin/center-phones
+// 센터별 agent 폰 라이브 상태 매트릭스 (super_admin 전용).
+// 응답: [ { center_id, center_name, is_active, agents: [{ user_id, name,
+//   agent_name, phone_id, ws_online, is_active }] } ]
+router.get('/center-phones', auth, requireRole('super_admin'), async (req, res) => {
+  try {
+    const { rows } = await query(`
+      SELECT c.id   AS center_id,
+             c.name AS center_name,
+             c.is_active AS center_active,
+             u.id   AS user_id,
+             u.name AS user_name,
+             u.agent_name,
+             u.phone_id,
+             u.is_active AS user_active
+        FROM centers c
+        LEFT JOIN users u ON u.center_id = c.id AND u.role = 'agent'
+       ORDER BY c.id, COALESCE(u.agent_name, ''), u.id`);
+
+    const groups = new Map();
+    for (const r of rows) {
+      if (!groups.has(r.center_id)) {
+        groups.set(r.center_id, {
+          center_id: r.center_id,
+          center_name: r.center_name,
+          is_active: r.center_active,
+          agents: [],
+        });
+      }
+      if (r.user_id) {
+        groups.get(r.center_id).agents.push({
+          user_id: r.user_id,
+          name: r.user_name,
+          agent_name: r.agent_name,
+          phone_id: r.phone_id,
+          is_active: r.user_active,
+          ws_online: isDeviceOnline(r.phone_id),
+        });
+      }
+    }
+    res.json([...groups.values()]);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
