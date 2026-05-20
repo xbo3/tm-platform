@@ -88,35 +88,96 @@ export default function ManagerView({ user }) {
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* HERO 2분할 */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-        {/* TM 실장 당일 성과 */}
-        <div className="card" style={{ background: 'linear-gradient(135deg, rgba(96,165,250,0.18), rgba(96,165,250,0.04))', border: '1px solid var(--info-soft)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <Led color="var(--info)" pulse />
-            <span style={{ fontSize: 11, color: 'var(--info)', fontWeight: 600, letterSpacing: '0.05em' }}>TM 실장 당일 성과</span>
+      {/* HERO 알림판 — 좌 TM / 우 DB. biplays 5/21: 우 DB 더 크게 (내용 중요). */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 18 }}>
+
+        {/* 좌 — TM 알림판 */}
+        <div className="card" style={{
+          background: 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(37,99,235,0.02))',
+          border: '1px solid var(--info-soft)',
+          padding: '24px 28px',
+          minHeight: 220,
+          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+        }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+              <Led color="var(--info)" pulse />
+              <span style={{ fontSize: 13, color: 'var(--info)', fontWeight: 700, letterSpacing: '0.06em' }}>TM 실장 당일 성과</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 12 }}>
+              <span className="mono" style={{ fontSize: 64, fontWeight: 700, color: 'var(--info)', lineHeight: 1 }}>{totals.calls}</span>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600 }}>총 콜</span>
+                <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>연결 {totals.connected} · 긍정 {totals.positive}</span>
+              </div>
+            </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
-            <span className="mono" style={{ fontSize: 36, fontWeight: 700, color: 'var(--info)' }}>{totals.calls}</span>
-            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>총 콜 · 연결 {totals.connected} · 긍정 {totals.positive}</span>
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12,
+            paddingTop: 14, borderTop: '1px solid var(--border-soft)',
+            fontSize: 12, color: 'var(--text-dim)',
+          }}>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>통화시간</div>
+              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)' }}>{fmtTime(totals.talk)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>평균 연결률</div>
+              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: overallRate > 30 ? 'var(--pos)' : 'var(--text)' }}>{overallRate}%</div>
+            </div>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>통화시간 {fmtTime(totals.talk)} · 평균 연결률 {overallRate}%</div>
         </div>
 
-        {/* 활성 DB 당일 성과 */}
-        <div className="card" style={{ background: 'linear-gradient(135deg, rgba(212,165,116,0.16), rgba(212,165,116,0.03))', border: '1px solid var(--accent-soft)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <Led color="var(--accent)" pulse />
-            <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, letterSpacing: '0.05em' }}>연결된 DB 당일 성과</span>
+        {/* 우 — DB 알림판 (더 크게, 내용 중요) */}
+        <div className="card" style={{
+          background: 'linear-gradient(135deg, rgba(176,122,54,0.10), rgba(176,122,54,0.02))',
+          border: '1px solid var(--accent-soft)',
+          padding: '24px 32px',
+          minHeight: 220,
+          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+        }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Led color="var(--accent)" pulse />
+                <span style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 700, letterSpacing: '0.06em' }}>연결된 DB · 현황</span>
+              </div>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                총 {lists.reduce((s, l) => s + +l.total, 0).toLocaleString()}건 · 잔여 {totalRemaining.toLocaleString()}건
+              </span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>활성 DB</div>
+                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--accent)', lineHeight: 1 }}>{lists.filter(l => l.is_active).length}</div>
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>연결</div>
+                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--pos)', lineHeight: 1 }}>{totals.connected}</div>
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>긍정</div>
+                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--accent)', lineHeight: 1 }}>{totals.positive}</div>
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>결번</div>
+                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--neg)', lineHeight: 1 }}>{totals.invalid}</div>
+              </div>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>긍정률</div>
+                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--accent-strong)', lineHeight: 1 }}>
+                  {totals.calls > 0 ? +(totals.positive / totals.calls * 100).toFixed(1) : 0}%
+                </div>
+              </div>
+            </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 6 }}>
-            <span className="mono" style={{ fontSize: 36, fontWeight: 700, color: 'var(--accent)' }}>
-              {lists.filter(l => l.is_active).length}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>활성 DB · 잔여 {totalRemaining.toLocaleString()}건</span>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-            결번 {totals.invalid} · 긍정률 {totals.calls > 0 ? +(totals.positive / totals.calls * 100).toFixed(1) : 0}%
+          <div style={{
+            paddingTop: 14, borderTop: '1px solid var(--border-soft)',
+            fontSize: 11, color: 'var(--text-dim)',
+            display: 'flex', justifyContent: 'space-between',
+          }}>
+            <span>📌 새 DB 업로드 시 중복 검사 자동 수행 (Phase D 작업 중)</span>
+            <span className="mono">{lists.length} DB 보유</span>
           </div>
         </div>
       </div>
