@@ -140,6 +140,14 @@ export async function initDB() {
     throw e;
   }
 
+  // Per-user active flag (SuperAdmin per-agent 정지/재개)
+  try {
+    await runMigration('004_user_active.sql');
+  } catch (e) {
+    console.error('[migration] 004_user_active.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {

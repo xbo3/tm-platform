@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { get, post, del } from '../api.js';
+import { get, post, put, del } from '../api.js';
 import { Led, Bar, Stat } from '../components/widgets.jsx';
 
 export default function AdminView() {
@@ -10,6 +10,10 @@ export default function AdminView() {
   const [suppliers, setSuppliers] = useState([]);
   const [newSupplier, setNewSupplier] = useState('');
   const [centerPhones, setCenterPhones] = useState([]);
+  const [newCenterName, setNewCenterName] = useState('');
+  const [newCenterPhones, setNewCenterPhones] = useState(5);
+  const [creatingCenter, setCreatingCenter] = useState(false);
+  const [newAgentInputs, setNewAgentInputs] = useState({}); // {center_id: "name"}
 
   // localStorage UI 가중치 (백엔드 env 가 진실; UI 는 비공개 슬라이더 의도)
   const [weights, setWeights] = useState(() => {
@@ -73,6 +77,77 @@ export default function AdminView() {
     localStorage.setItem('tm_quality_weights', JSON.stringify(next));
   };
 
+  const createCenter = async () => {
+    const name = newCenterName.trim();
+    if (!name) return;
+    if (creatingCenter) return;
+    const phoneCount = Math.max(1, Math.min(50, +newCenterPhones || 5));
+    setCreatingCenter(true);
+    try {
+      const ts = Date.now();
+      await post('/centers', {
+        name,
+        owner_email: `center${ts}@tm.co.kr`,
+        owner_name: `${name} 센터장`,
+        phone_count: phoneCount,
+        plan: 'basic',
+      });
+      setNewCenterName('');
+      setNewCenterPhones(5);
+      refresh();
+      refreshPhones();
+    } catch (e) {
+      window.alert('센터 생성 실패: ' + e.message);
+    } finally {
+      setCreatingCenter(false);
+    }
+  };
+
+  const toggleCenterActive = async (center) => {
+    const action = center.is_active ? '정지' : '재개';
+    if (!window.confirm(`${center.center_name} 을(를) ${action}하시겠습니까?`)) return;
+    try {
+      await put(`/centers/${center.center_id}/active`, { is_active: !center.is_active });
+      refresh();
+      refreshPhones();
+    } catch (e) {
+      window.alert('실패: ' + e.message);
+    }
+  };
+
+  const deleteCenter = async (center) => {
+    if (!window.confirm(`${center.center_name} 을(를) 영구 삭제하시겠습니까? 모든 phones/agents/customers/calls 가 함께 삭제됩니다.`)) return;
+    if (!window.confirm('정말 삭제? 되돌릴 수 없습니다.')) return;
+    try {
+      await del(`/centers/${center.center_id}`);
+      refresh();
+      refreshPhones();
+    } catch (e) {
+      window.alert('삭제 실패: ' + e.message);
+    }
+  };
+
+  const toggleAgentActive = async (agent) => {
+    try {
+      await put(`/centers/users/${agent.user_id}/active`, { is_active: !agent.is_active });
+      refreshPhones();
+    } catch (e) {
+      window.alert('실패: ' + e.message);
+    }
+  };
+
+  const addAgent = async (centerId) => {
+    const name = (newAgentInputs[centerId] || '').trim();
+    if (!name) return;
+    try {
+      await post(`/centers/${centerId}/agents`, { name });
+      setNewAgentInputs(prev => ({ ...prev, [centerId]: '' }));
+      refreshPhones();
+    } catch (e) {
+      window.alert('실장 추가 실패: ' + e.message);
+    }
+  };
+
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
@@ -93,7 +168,7 @@ export default function AdminView() {
         <Stat label="긍정" value={overview.reduce((s, c) => s + +c.positive, 0).toLocaleString()} color="var(--accent)" />
       </div>
 
-      {/* 전체 센터 · 폰 라이브 상태 */}
+      {/* 전체 센터 · 폰 라이브 상태 + 센터/실장 관리 */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <span style={{ fontSize: 13, fontWeight: 600 }}>전체 센터 · 폰 라이브 상태</span>
@@ -111,17 +186,28 @@ export default function AdminView() {
             const onlineCount = c.agents.filter(a => a.ws_online).length;
             return (
               <div key={c.center_id} style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontWeight: 600 }}>{c.center_name}</span>
                   {!c.is_active && <span className="tag" style={{ background: 'var(--neg-soft)', color: 'var(--neg)' }}>정지</span>}
                   <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>
                     {onlineCount}/{c.agents.length} online
                   </span>
+                  <div style={{ flex: 1 }} />
+                  <button
+                    onClick={() => toggleCenterActive(c)}
+                    className="btn ghost"
+                    style={{ fontSize: 10, padding: '3px 8px' }}
+                  >{c.is_active ? '정지' : '재개'}</button>
+                  <button
+                    onClick={() => deleteCenter(c)}
+                    className="btn ghost danger"
+                    style={{ fontSize: 10, padding: '3px 8px' }}
+                  >삭제</button>
                 </div>
                 {c.agents.length === 0 && (
                   <div style={{ fontSize: 10, color: 'var(--text-faint)', paddingLeft: 12 }}>등록된 실장 없음</div>
                 )}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
                   {c.agents.map(a => {
                     const color = !a.is_active
                       ? 'var(--text-faint)'
@@ -139,14 +225,70 @@ export default function AdminView() {
                         <span style={{ flex: 1, fontSize: 11, color: a.is_active ? 'var(--text)' : 'var(--text-faint)' }}>
                           {a.name || '(이름 없음)'}
                         </span>
-                        {!a.is_active && <span className="tag" style={{ fontSize: 9 }}>정지</span>}
+                        <button
+                          onClick={() => toggleAgentActive(a)}
+                          className="btn ghost"
+                          style={{ fontSize: 9, padding: '2px 6px' }}
+                          title={a.is_active ? '실장 정지' : '실장 재개'}
+                        >{a.is_active ? '정지' : '재개'}</button>
                       </div>
                     );
                   })}
                 </div>
+
+                {/* 실장 추가 form */}
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, paddingLeft: 4 }}>
+                  <input
+                    placeholder="실장 이름 (예: 김상민)"
+                    value={newAgentInputs[c.center_id] || ''}
+                    onChange={e => setNewAgentInputs(prev => ({ ...prev, [c.center_id]: e.target.value }))}
+                    onKeyDown={e => e.key === 'Enter' && addAgent(c.center_id)}
+                    style={{ flex: 1, fontSize: 11 }}
+                  />
+                  <button
+                    onClick={() => addAgent(c.center_id)}
+                    className="btn"
+                    style={{ fontSize: 11, padding: '4px 10px' }}
+                    disabled={!(newAgentInputs[c.center_id] || '').trim()}
+                  >실장 추가</button>
+                </div>
               </div>
             );
           })}
+        </div>
+
+        {/* 센터 생성 form */}
+        <div style={{
+          borderTop: '1px solid var(--border-soft)',
+          marginTop: 16, paddingTop: 14,
+          display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>새 센터:</span>
+          <input
+            placeholder="센터명 (예: 부산센터)"
+            value={newCenterName}
+            onChange={e => setNewCenterName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && createCenter()}
+            style={{ flex: 1, minWidth: 160, fontSize: 12 }}
+          />
+          <label style={{ fontSize: 10, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            폰 수
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={newCenterPhones}
+              onChange={e => setNewCenterPhones(+e.target.value || 5)}
+              className="mono"
+              style={{ width: 56, fontSize: 11, textAlign: 'center' }}
+            />
+          </label>
+          <button
+            onClick={createCenter}
+            className="btn primary"
+            style={{ fontSize: 11, padding: '5px 12px' }}
+            disabled={creatingCenter || !newCenterName.trim()}
+          >{creatingCenter ? '생성 중...' : '센터 생성'}</button>
         </div>
       </div>
 

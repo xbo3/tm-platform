@@ -69,4 +69,89 @@ router.put('/:id', auth, role('super_admin', 'center_admin'), async (req, res) =
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Toggle center active state (super_admin only — 정지/재개)
+router.put('/:id/active', auth, role('super_admin'), async (req, res) => {
+  try {
+    const { is_active } = req.body;
+    const { rows } = await query(
+      `UPDATE centers SET is_active=$1 WHERE id=$2 RETURNING *`,
+      [!!is_active, req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete center (super_admin only). DB FK cascades wipe phones/users/calls/customers.
+router.delete('/:id', auth, role('super_admin'), async (req, res) => {
+  try {
+    const { rowCount } = await query(`DELETE FROM centers WHERE id=$1`, [req.params.id]);
+    if (rowCount === 0) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Add a new agent to an existing center. Auto-assigns the next letter
+// (A..Z, then AA..) — supports center sizes beyond 5.
+router.post('/:id/agents', auth, role('super_admin'), async (req, res) => {
+  const cid = +req.params.id;
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+
+    const center = await query(`SELECT id FROM centers WHERE id=$1`, [cid]);
+    if (center.rows.length === 0) return res.status(404).json({ error: 'Center not found' });
+
+    const { rows: existing } = await query(
+      `SELECT agent_name FROM users WHERE center_id=$1 AND role='agent' AND agent_name IS NOT NULL`,
+      [cid]
+    );
+    const used = new Set(existing.map(r => r.agent_name));
+    const next = (() => {
+      for (let i = 0; i < 26; i++) {
+        const ch = String.fromCharCode(65 + i);
+        if (!used.has(ch)) return ch;
+      }
+      // After Z: AA, AB, ...
+      for (let i = 0; i < 26; i++) {
+        for (let j = 0; j < 26; j++) {
+          const code = String.fromCharCode(65 + i) + String.fromCharCode(65 + j);
+          if (!used.has(code)) return code;
+        }
+      }
+      return `X${Date.now() % 1000}`;
+    })();
+
+    const sip = `${2000 + cid * 100 + used.size + 1}`;
+    const phone = await query(
+      `INSERT INTO phones (center_id, sip_account) VALUES ($1,$2) RETURNING id`,
+      [cid, sip]
+    );
+    const email = `agent${next.toLowerCase()}_c${cid}@tm.co.kr`;
+    const agentHash = await bcrypt.hash('agent123', 10);
+    const inserted = await query(
+      `INSERT INTO users (email, password, role, name, agent_name, center_id, phone_id)
+         VALUES ($1,$2,'agent',$3,$4,$5,$6) RETURNING id, agent_name, name, phone_id`,
+      [email, agentHash, name.trim(), next, cid, phone.rows[0].id]
+    );
+    res.json(inserted.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Toggle a single user's active state (super_admin only). Used for per-agent
+// 정지/재개 from the SuperAdmin center matrix.
+router.put('/users/:user_id/active', auth, role('super_admin'), async (req, res) => {
+  try {
+    const { is_active } = req.body;
+    const { rows } = await query(
+      `UPDATE users SET is_active=$1 WHERE id=$2 RETURNING id, name, agent_name, is_active`,
+      [!!is_active, req.params.user_id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 export default router;

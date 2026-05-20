@@ -16,6 +16,7 @@ router.post('/login', async (req, res) => {
     const user = rows[0];
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+    if (user.is_active === false) return res.status(403).json({ error: 'Account suspended' });
 
     const token = generateToken(user);
     res.json({ token, user: { id: user.id, email: user.email, role: user.role, name: user.name, center_id: user.center_id } });
