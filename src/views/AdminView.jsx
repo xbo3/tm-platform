@@ -14,6 +14,7 @@ export default function AdminView() {
   const [newCenterPhones, setNewCenterPhones] = useState(5);
   const [creatingCenter, setCreatingCenter] = useState(false);
   const [newAgentInputs, setNewAgentInputs] = useState({}); // {center_id: "name"}
+  const [aiCost, setAiCost] = useState(null);
 
   // localStorage UI 가중치 (백엔드 env 가 진실; UI 는 비공개 슬라이더 의도)
   const [weights, setWeights] = useState(() => {
@@ -47,12 +48,21 @@ export default function AdminView() {
     } catch (e) { console.error('center-phones', e); }
   };
 
+  const refreshAiCost = async () => {
+    try {
+      const c = await get('/admin/ai-cost');
+      setAiCost(c);
+    } catch (e) { console.error('ai-cost', e); }
+  };
+
   useEffect(() => {
     refresh();
     refreshPhones();
+    refreshAiCost();
     const t = setInterval(refresh, 15000);
     const t2 = setInterval(refreshPhones, 5000);
-    return () => { clearInterval(t); clearInterval(t2); };
+    const t3 = setInterval(refreshAiCost, 60000);
+    return () => { clearInterval(t); clearInterval(t2); clearInterval(t3); };
   }, []);
 
   const addSupplier = async () => {
@@ -167,6 +177,9 @@ export default function AdminView() {
         <Stat label="연결" value={overview.reduce((s, c) => s + +c.connected, 0).toLocaleString()} color="var(--pos)" />
         <Stat label="긍정" value={overview.reduce((s, c) => s + +c.positive, 0).toLocaleString()} color="var(--accent)" />
       </div>
+
+      {/* AI 분류 비용 (Haiku 4.5 실측) */}
+      <AiCostCard data={aiCost} />
 
       {/* 전체 센터 · 폰 라이브 상태 + 센터/실장 관리 */}
       <div className="card">
@@ -447,6 +460,100 @@ export default function AdminView() {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function AiCostCard({ data }) {
+  const fmtUsd = (n) => '$' + (Number(n) || 0).toFixed(4);
+  const fmtUsdShort = (n) => '$' + (Number(n) || 0).toFixed(2);
+  const fmtTokens = (n) => (Number(n) || 0).toLocaleString();
+
+  const today  = data?.today  || { calls: 0, cost_usd: 0, input_tokens: 0, output_tokens: 0 };
+  const month  = data?.month  || { calls: 0, cost_usd: 0, input_tokens: 0, output_tokens: 0 };
+  const total  = data?.total  || { calls: 0, cost_usd: 0, input_tokens: 0, output_tokens: 0 };
+  const recent = data?.recent || [];
+
+  const avgPerCall = today.calls > 0 ? today.cost_usd / today.calls : 0;
+  const monthAvg   = month.calls > 0 ? month.cost_usd / month.calls : 0;
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>AI 분류 비용 (Haiku 4.5 실측)</span>
+          <span style={{ fontSize: 10, color: 'var(--text-faint)', marginLeft: 8 }}>
+            classify.js → ai_usage 누적. 60s polling.
+          </span>
+        </div>
+        <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+          단가: in $1 / out $5 / cache-read $0.10 / M
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+        <div style={{ padding: 12, background: 'var(--bg)', border: '1px solid var(--border-soft)', borderRadius: 6 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4 }}>오늘</div>
+          <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>{fmtUsd(today.cost_usd)}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>
+            {today.calls} 콜 · 평균 {fmtUsd(avgPerCall)}/콜
+          </div>
+        </div>
+        <div style={{ padding: 12, background: 'var(--bg)', border: '1px solid var(--border-soft)', borderRadius: 6 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4 }}>이번달</div>
+          <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)' }}>{fmtUsdShort(month.cost_usd)}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>
+            {month.calls} 콜 · 평균 {fmtUsd(monthAvg)}/콜
+          </div>
+        </div>
+        <div style={{ padding: 12, background: 'var(--bg)', border: '1px solid var(--border-soft)', borderRadius: 6 }}>
+          <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4 }}>누적</div>
+          <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-dim)' }}>{fmtUsdShort(total.cost_usd)}</div>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>
+            in {fmtTokens(total.input_tokens)} / out {fmtTokens(total.output_tokens)} tok
+          </div>
+        </div>
+      </div>
+
+      {recent.length > 0 && (
+        <details style={{ marginTop: 12 }}>
+          <summary style={{ fontSize: 11, color: 'var(--text-dim)', cursor: 'pointer' }}>
+            최근 {recent.length} 호출 ▾
+          </summary>
+          <div style={{ marginTop: 8, overflowX: 'auto' }}>
+            <table style={{ width: '100%', fontSize: 10 }}>
+              <thead>
+                <tr style={{ color: 'var(--text-faint)' }}>
+                  <th style={{ textAlign: 'left' }}>시각</th>
+                  <th style={{ textAlign: 'right' }}>call_id</th>
+                  <th style={{ textAlign: 'right' }}>in</th>
+                  <th style={{ textAlign: 'right' }}>out</th>
+                  <th style={{ textAlign: 'right' }}>cost</th>
+                  <th style={{ textAlign: 'right' }}>latency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map(r => (
+                  <tr key={r.id}>
+                    <td className="mono">{new Date(r.created_at).toLocaleString('ko-KR')}</td>
+                    <td className="mono" style={{ textAlign: 'right' }}>{r.call_id ?? '—'}</td>
+                    <td className="mono" style={{ textAlign: 'right' }}>{fmtTokens(r.input_tokens)}</td>
+                    <td className="mono" style={{ textAlign: 'right' }}>{fmtTokens(r.output_tokens)}</td>
+                    <td className="mono" style={{ textAlign: 'right', color: 'var(--accent)' }}>{fmtUsd(r.cost_usd)}</td>
+                    <td className="mono" style={{ textAlign: 'right' }}>{r.latency_ms ?? '—'}ms</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+
+      {recent.length === 0 && (
+        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-faint)' }}>
+          아직 분류 호출 없음. 첫 통화 분류 후 데이터 누적 시작.
+        </div>
+      )}
     </div>
   );
 }

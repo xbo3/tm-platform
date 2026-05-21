@@ -35,6 +35,23 @@ function getAnthropic() {
 // 6단계 카테고리. customers.status 와 calls.result 양쪽 호환.
 const VALID_CATEGORIES = new Set(['invalid', 'dormant', 'no_answer', 'reject', 'recall', 'positive']);
 
+// Haiku 4.5 공식 단가 (per million tokens, USD). 단가 변경 시 여기 한 줄 갱신.
+const HAIKU_PRICING = {
+  input:        1.00,  // $1.00 / M input tokens
+  output:       5.00,  // $5.00 / M output tokens
+  cache_read:   0.10,  // $0.10 / M cache-read tokens
+  cache_create: 1.25,  // $1.25 / M cache-create tokens (5m TTL)
+};
+
+function computeHaikuCost(usage) {
+  const u = usage || {};
+  const i  = (u.input_tokens || 0)             * HAIKU_PRICING.input        / 1_000_000;
+  const o  = (u.output_tokens || 0)            * HAIKU_PRICING.output       / 1_000_000;
+  const cr = (u.cache_read_input_tokens || 0)  * HAIKU_PRICING.cache_read   / 1_000_000;
+  const cc = (u.cache_creation_input_tokens || 0) * HAIKU_PRICING.cache_create / 1_000_000;
+  return +(i + o + cr + cc).toFixed(8);
+}
+
 const SYSTEM_PROMPT = `너는 한국어 텔레마케팅 통화 STT 텍스트를 6단계로 분류하는 분류기다.
 카테고리:
   - invalid    : 결번/없는 번호 (안내멘트/연결음만)
@@ -89,6 +106,7 @@ async function callHaiku(stt_text, callMeta) {
     `"""`,
   ].join('\n');
 
+  const t0 = Date.now();
   const resp = await client.messages.create({
     model: HAIKU_MODEL,
     max_tokens: 500,
@@ -96,6 +114,7 @@ async function callHaiku(stt_text, callMeta) {
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: userMsg }],
   });
+  const latency_ms = Date.now() - t0;
   const text = (resp.content || [])
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
@@ -109,7 +128,7 @@ async function callHaiku(stt_text, callMeta) {
   } catch (e) {
     throw new Error(`Haiku returned non-JSON: ${text.slice(0, 200)}`);
   }
-  return parsed;
+  return { parsed, usage: resp.usage || {}, latency_ms };
 }
 
 // duration-only fallback (legacy mock) — kept so the endpoint never goes silent
@@ -172,12 +191,40 @@ router.post('/:call_id', auth, async (req, res) => {
 
     // 3) Haiku
     let parsed = null;
+    let haikuMeta = null; // { usage, latency_ms }
     if (stt_text !== null) {
       try {
-        parsed = await callHaiku(stt_text, { duration_sec: dur, started_at: c.started_at });
+        const r = await callHaiku(stt_text, { duration_sec: dur, started_at: c.started_at });
+        parsed = r.parsed;
+        haikuMeta = { usage: r.usage, latency_ms: r.latency_ms };
       } catch (e) {
         fallback_reason = (fallback_reason ? fallback_reason + '; ' : '') + `haiku_failed: ${e.message}`;
         console.error('[classify] Haiku failed:', e.message);
+      }
+    }
+
+    // 3.5) AI usage 기록 (Haiku 호출 성공 시만). 실패해도 분류는 계속 진행.
+    if (haikuMeta) {
+      try {
+        const u = haikuMeta.usage || {};
+        const cost = computeHaikuCost(u);
+        await query(
+          `INSERT INTO ai_usage
+            (call_id, model, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens, cost_usd, latency_ms)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            call_id,
+            HAIKU_MODEL,
+            u.input_tokens || 0,
+            u.output_tokens || 0,
+            u.cache_read_input_tokens || 0,
+            u.cache_creation_input_tokens || 0,
+            cost,
+            haikuMeta.latency_ms,
+          ]
+        );
+      } catch (e) {
+        console.error('[classify] ai_usage insert failed:', e.message);
       }
     }
 

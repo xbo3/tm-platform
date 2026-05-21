@@ -191,4 +191,72 @@ router.get('/center-phones', auth, requireRole('super_admin'), async (req, res) 
   }
 });
 
+// GET /api/admin/ai-cost
+// 슈퍼어드민 — AI 분류 (Haiku) 실측 토큰/비용 집계.
+// 응답: today / month / total + recent N. 비용은 USD, 토큰은 정수.
+router.get('/ai-cost', auth, requireRole('super_admin'), async (req, res) => {
+  try {
+    const { rows } = await query(`
+      WITH agg AS (
+        SELECT
+          COALESCE(SUM(input_tokens),0)        AS input_tokens,
+          COALESCE(SUM(output_tokens),0)       AS output_tokens,
+          COALESCE(SUM(cache_read_tokens),0)   AS cache_read_tokens,
+          COALESCE(SUM(cache_create_tokens),0) AS cache_create_tokens,
+          COALESCE(SUM(cost_usd),0)            AS cost_usd,
+          COUNT(*)                              AS calls
+        FROM ai_usage
+      )
+      SELECT
+        (SELECT row_to_json(agg) FROM agg)                                                                         AS total,
+        (SELECT row_to_json(t) FROM (
+           SELECT
+             COALESCE(SUM(input_tokens),0)::int        AS input_tokens,
+             COALESCE(SUM(output_tokens),0)::int       AS output_tokens,
+             COALESCE(SUM(cache_read_tokens),0)::int   AS cache_read_tokens,
+             COALESCE(SUM(cache_create_tokens),0)::int AS cache_create_tokens,
+             COALESCE(SUM(cost_usd),0)                  AS cost_usd,
+             COUNT(*)::int                              AS calls
+           FROM ai_usage
+           WHERE created_at >= date_trunc('day', NOW())
+         ) t)                                                                                                       AS today,
+        (SELECT row_to_json(t) FROM (
+           SELECT
+             COALESCE(SUM(input_tokens),0)::int        AS input_tokens,
+             COALESCE(SUM(output_tokens),0)::int       AS output_tokens,
+             COALESCE(SUM(cache_read_tokens),0)::int   AS cache_read_tokens,
+             COALESCE(SUM(cache_create_tokens),0)::int AS cache_create_tokens,
+             COALESCE(SUM(cost_usd),0)                  AS cost_usd,
+             COUNT(*)::int                              AS calls
+           FROM ai_usage
+           WHERE created_at >= date_trunc('month', NOW())
+         ) t)                                                                                                       AS month
+    `);
+
+    const r = rows[0] || {};
+    const recent = await query(
+      `SELECT id, call_id, model, input_tokens, output_tokens,
+              cache_read_tokens, cache_create_tokens, cost_usd, latency_ms, created_at
+         FROM ai_usage
+         ORDER BY created_at DESC
+         LIMIT 20`
+    );
+
+    res.json({
+      pricing_per_million_usd: {
+        input: 1.00,
+        output: 5.00,
+        cache_read: 0.10,
+        cache_create: 1.25,
+      },
+      today: r.today || { input_tokens:0, output_tokens:0, cache_read_tokens:0, cache_create_tokens:0, cost_usd:0, calls:0 },
+      month: r.month || { input_tokens:0, output_tokens:0, cache_read_tokens:0, cache_create_tokens:0, cost_usd:0, calls:0 },
+      total: r.total || { input_tokens:0, output_tokens:0, cache_read_tokens:0, cache_create_tokens:0, cost_usd:0, calls:0 },
+      recent: recent.rows,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 export default router;

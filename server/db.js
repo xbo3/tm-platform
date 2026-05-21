@@ -148,6 +148,14 @@ export async function initDB() {
     throw e;
   }
 
+  // AI 분류 토큰/비용 누적 (Haiku 4.5 실측 비용 모니터)
+  try {
+    await runMigration('005_ai_usage.sql');
+  } catch (e) {
+    console.error('[migration] 005_ai_usage.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {
