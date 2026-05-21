@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { get, post, uploadFile } from '../api.js';
+import { get, post, patch, uploadFile } from '../api.js';
 import { Led, Bar, Stat, fmtTime, gradeFromRate } from '../components/widgets.jsx';
 import DistributeModal from '../components/DistributeModal.jsx';
 
@@ -58,15 +58,18 @@ export default function ManagerView({ user }) {
     if (fileRef.current) fileRef.current.value = '';
   };
 
-  const updateList = async (id, patch) => {
+  const updateList = async (id, patchBody) => {
+    // 낙관적 UI 갱신
+    setLists(prev => prev.map(l => l.id === id ? { ...l, ...patchBody } : l));
     try {
-      await post(`/dist/preview`, { list_id: id }); // no-op preflight to ensure id valid; ignore
-    } catch {}
-    // category / supplier_tg / auto_connect 같은 메타는 dist/execute 시 같이 보내고,
-    // 단독 변경은 customer_lists PUT 이 따로 없으므로 distribution 시점에 반영.
-    // → UI 만 로컬로 업데이트
-    setLists(prev => prev.map(l => l.id === id ? { ...l, ...patch } : l));
+      await patch(`/lists/${id}`, patchBody);
+    } catch (e) {
+      window.alert('갱신 실패: ' + e.message);
+      refresh(); // 서버 상태 재동기화
+    }
   };
+
+  const toggleActive = (l) => updateList(l.id, { is_active: !l.is_active });
 
   const totals = data?.agents
     ? data.agents.reduce(
@@ -77,13 +80,32 @@ export default function ManagerView({ user }) {
         invalid: acc.invalid + +a.invalid_count,
         talk: acc.talk + +a.talk_time,
         pending: acc.pending + +a.pending,
+        today_calls: acc.today_calls + (+a.today_calls || 0),
+        today_connected: acc.today_connected + (+a.today_connected || 0),
+        today_positive: acc.today_positive + (+a.today_positive || 0),
+        today_talk: acc.today_talk + (+a.today_talk_time || 0),
+        y_calls: acc.y_calls + (+a.yesterday_calls || 0),
+        y_connected: acc.y_connected + (+a.yesterday_connected || 0),
+        y_positive: acc.y_positive + (+a.yesterday_positive || 0),
       }),
-      { calls: 0, connected: 0, positive: 0, invalid: 0, talk: 0, pending: 0 }
+      { calls: 0, connected: 0, positive: 0, invalid: 0, talk: 0, pending: 0,
+        today_calls: 0, today_connected: 0, today_positive: 0, today_talk: 0,
+        y_calls: 0, y_connected: 0, y_positive: 0 }
     )
-    : { calls: 0, connected: 0, positive: 0, invalid: 0, talk: 0, pending: 0 };
+    : { calls: 0, connected: 0, positive: 0, invalid: 0, talk: 0, pending: 0,
+        today_calls: 0, today_connected: 0, today_positive: 0, today_talk: 0,
+        y_calls: 0, y_connected: 0, y_positive: 0 };
 
   const overallRate = totals.calls > 0 ? +((totals.connected / totals.calls) * 100).toFixed(1) : 0;
+  const todayRate = totals.today_calls > 0 ? +((totals.today_connected / totals.today_calls) * 100).toFixed(1) : 0;
   const totalRemaining = lists.reduce((s, l) => s + +l.remaining, 0);
+
+  const delta = (today, y) => {
+    if (!y) return null;
+    const d = today - y;
+    if (d === 0) return null;
+    return { sign: d > 0 ? '+' : '', val: d, pct: y > 0 ? Math.round((d / y) * 100) : null };
+  };
 
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -91,39 +113,62 @@ export default function ManagerView({ user }) {
       {/* HERO 알림판 — 좌 TM / 우 DB. biplays 5/21: 우 DB 더 크게 (내용 중요). */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 18 }}>
 
-        {/* 좌 — TM 알림판 */}
+        {/* 좌 — 당일 성과 (vs 전일) */}
         <div className="card" style={{
           background: 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(37,99,235,0.02))',
           border: '1px solid var(--info-soft)',
-          padding: '24px 28px',
+          padding: '22px 26px',
           minHeight: 220,
           display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
         }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
-              <Led color="var(--info)" pulse />
-              <span style={{ fontSize: 13, color: 'var(--info)', fontWeight: 700, letterSpacing: '0.06em' }}>TM 실장 당일 성과</span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Led color="var(--info)" pulse />
+                <span style={{ fontSize: 12, color: 'var(--info)', fontWeight: 700, letterSpacing: '0.06em' }}>당일 성과 (vs 전일)</span>
+              </div>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                {new Date().toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit', weekday: 'short' })}
+              </span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 12 }}>
-              <span className="mono" style={{ fontSize: 64, fontWeight: 700, color: 'var(--info)', lineHeight: 1 }}>{totals.calls}</span>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <span style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600 }}>총 콜</span>
-                <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>연결 {totals.connected} · 긍정 {totals.positive}</span>
+
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 14 }}>
+              <span className="mono" style={{ fontSize: 56, fontWeight: 700, color: 'var(--info)', lineHeight: 1 }}>{totals.today_calls}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 600 }}>오늘 총 콜</span>
+                {(() => {
+                  const d = delta(totals.today_calls, totals.y_calls);
+                  if (!d) return <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>전일 {totals.y_calls}</span>;
+                  return <span style={{ fontSize: 11, color: d.val > 0 ? 'var(--pos)' : 'var(--neg)', fontWeight: 600 }}>
+                    {d.sign}{d.val} vs 전일 {d.pct !== null ? `(${d.sign}${d.pct}%)` : ''}
+                  </span>;
+                })()}
               </div>
             </div>
           </div>
+
           <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12,
-            paddingTop: 14, borderTop: '1px solid var(--border-soft)',
+            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
+            paddingTop: 12, borderTop: '1px solid var(--border-soft)',
             fontSize: 12, color: 'var(--text-dim)',
           }}>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>통화시간</div>
-              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: 'var(--text)' }}>{fmtTime(totals.talk)}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>연결</div>
+              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: 'var(--pos)' }}>
+                {totals.today_connected} <span style={{ fontSize: 10, color: 'var(--text-faint)', fontWeight: 400 }}>/ {totals.y_connected}</span>
+              </div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>평균 연결률</div>
-              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: overallRate > 30 ? 'var(--pos)' : 'var(--text)' }}>{overallRate}%</div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>긍정</div>
+              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: 'var(--accent)' }}>
+                {totals.today_positive} <span style={{ fontSize: 10, color: 'var(--text-faint)', fontWeight: 400 }}>/ {totals.y_positive}</span>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>연결률</div>
+              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: todayRate > 30 ? 'var(--pos)' : 'var(--text)' }}>
+                {todayRate}%
+              </div>
             </div>
           </div>
         </div>
@@ -196,17 +241,30 @@ export default function ManagerView({ user }) {
               <tr>
                 <th style={{ width: 24 }}>#</th>
                 <th>실장</th>
-                <th style={{ textAlign: 'right' }}>콜</th>
-                <th style={{ textAlign: 'right' }}>연결</th>
-                <th style={{ textAlign: 'right' }}>긍정</th>
-                <th style={{ textAlign: 'right' }}>연결률</th>
+                <th colSpan={3} style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-faint)', borderRight: '1px solid var(--border-soft)' }}>오늘</th>
+                <th colSpan={2} style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-faint)' }}>누적</th>
                 <th style={{ textAlign: 'right' }}>등급</th>
+              </tr>
+              <tr style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                <th></th>
+                <th></th>
+                <th style={{ textAlign: 'right' }}>콜</th>
+                <th style={{ textAlign: 'right' }}>연결률</th>
+                <th style={{ textAlign: 'right', borderRight: '1px solid var(--border-soft)' }}>긍정률</th>
+                <th style={{ textAlign: 'right' }}>콜</th>
+                <th style={{ textAlign: 'right' }}>가동</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {(data?.agents || []).map((a, i) => {
-                const rate = +a.total_calls > 0 ? +((+a.connected / +a.total_calls) * 100).toFixed(1) : 0;
-                const g = gradeFromRate(rate);
+                const todayCalls = +a.today_calls || 0;
+                const todayConn  = +a.today_connected || 0;
+                const todayPos   = +a.today_positive || 0;
+                const todayRate  = todayCalls > 0 ? +((todayConn / todayCalls) * 100).toFixed(1) : 0;
+                const todayPosRate = todayCalls > 0 ? +((todayPos / todayCalls) * 100).toFixed(1) : 0;
+                const cumRate    = +a.total_calls > 0 ? +((+a.connected / +a.total_calls) * 100).toFixed(1) : 0;
+                const g = gradeFromRate(cumRate);
                 return (
                   <tr key={a.agent_name}>
                     <td className="mono dim">{i + 1}</td>
@@ -214,10 +272,11 @@ export default function ManagerView({ user }) {
                       <div style={{ fontWeight: 600 }}>{a.name}</div>
                       <div style={{ fontSize: 10, color: 'var(--text-faint)' }} className="mono">{a.agent_name} · {a.sip_account || '-'}</div>
                     </td>
+                    <td className="mono" style={{ textAlign: 'right' }}>{todayCalls}</td>
+                    <td className="mono" style={{ textAlign: 'right', color: todayRate > 30 ? 'var(--pos)' : 'var(--text)' }}>{todayRate}%</td>
+                    <td className="mono" style={{ textAlign: 'right', color: 'var(--accent)', borderRight: '1px solid var(--border-soft)' }}>{todayPosRate}%</td>
                     <td className="mono" style={{ textAlign: 'right' }}>{a.total_calls}</td>
-                    <td className="mono" style={{ textAlign: 'right', color: 'var(--pos)' }}>{a.connected}</td>
-                    <td className="mono" style={{ textAlign: 'right', color: 'var(--accent)' }}>{a.positive}</td>
-                    <td className="mono" style={{ textAlign: 'right' }}>{rate}%</td>
+                    <td className="mono" style={{ textAlign: 'right', color: 'var(--text-dim)' }}>{fmtTime(+a.talk_time || 0)}</td>
                     <td style={{ textAlign: 'right' }}>
                       <span className="tag" style={{ background: g.color + '22', color: g.color }}>{g.grade}</span>
                     </td>
@@ -225,7 +284,7 @@ export default function ManagerView({ user }) {
                 );
               })}
               {(!data?.agents || data.agents.length === 0) && (
-                <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 20 }}>로딩중…</td></tr>
+                <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 20 }}>로딩중…</td></tr>
               )}
             </tbody>
           </table>
@@ -309,6 +368,7 @@ export default function ManagerView({ user }) {
                     placeholder="@공급자"
                     value={l.supplier_tg || ''}
                     onChange={e => updateList(l.id, { supplier_tg: e.target.value })}
+                    onBlur={e => updateList(l.id, { supplier_tg: e.target.value })}
                     className="mono"
                     style={{ fontSize: 11, padding: '5px 8px', width: 120, color: 'var(--info)' }}
                   />
@@ -318,9 +378,25 @@ export default function ManagerView({ user }) {
                     오토연결
                   </label>
 
-                  <button className="btn primary" onClick={() => setDistList(l)} style={{ marginLeft: 'auto' }}>
-                    분배
-                  </button>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {/* [연결] / [소진] 토글 — 시안 6-bis */}
+                    <button
+                      onClick={() => toggleActive(l)}
+                      title={l.is_active ? '활성 → 비활성 (소진/정지)' : '비활성 → 활성 (NEXT CALL 큐에 포함)'}
+                      style={{
+                        padding: '6px 12px', fontSize: 11, fontWeight: 600,
+                        background: l.is_active ? 'var(--pos)' : 'transparent',
+                        border: `1px solid ${l.is_active ? 'var(--pos)' : 'var(--border)'}`,
+                        borderRadius: 5,
+                        color: l.is_active ? '#fff' : 'var(--text-dim)',
+                        cursor: 'pointer',
+                      }}>
+                      {l.is_active ? '연결됨' : '소진'}
+                    </button>
+                    <button className="btn primary" onClick={() => setDistList(l)}>
+                      분배
+                    </button>
+                  </div>
                 </div>
 
                 {l.agents?.length > 0 && (

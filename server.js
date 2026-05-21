@@ -135,9 +135,18 @@ app.get('/api/dashboard/:cid', auth, requireRole('center_admin', 'super_admin'),
         (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='invalid') as invalid_count,
         (SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE agent=u.agent_name AND center_id=$1) as talk_time,
         (SELECT COUNT(*) FROM customers WHERE assigned_agent=u.agent_name AND center_id=$1 AND status='pending') as pending,
-        (SELECT COALESCE(AVG(duration_sec),0)::int FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as avg_conn_sec
+        (SELECT COALESCE(AVG(duration_sec),0)::int FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as avg_conn_sec,
+        -- 오늘 (시안: 실장 성적 — 오늘 / 누적 분리)
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2) as today_calls,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2 AND result IN ('connected','positive')) as today_connected,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2 AND result='positive') as today_positive,
+        (SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2) as today_talk_time,
+        -- 전일 (delta 비교용)
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2::date - INTERVAL '1 day') as yesterday_calls,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2::date - INTERVAL '1 day' AND result IN ('connected','positive')) as yesterday_connected,
+        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2::date - INTERVAL '1 day' AND result='positive') as yesterday_positive
       FROM users u LEFT JOIN phones p ON u.phone_id=p.id
-      WHERE u.center_id=$1 AND u.role='agent' ORDER BY u.agent_name`, [cid]);
+      WHERE u.center_id=$1 AND u.role='agent' ORDER BY u.agent_name`, [cid, today]);
 
     // hourly per agent (today)
     const { rows: hourlyRows } = await query(`
@@ -207,6 +216,38 @@ app.get('/api/lists/:cid', auth, requireRole('center_admin', 'super_admin'), asy
       l.agents = ag;
     }
     res.json(lists);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH /api/lists/:id — meta 갱신 (category / supplier_tg / auto_connect / is_active)
+// 시안의 [활성 ON/OFF] / [소진] 버튼을 위한 토글 + 카테고리/공급자 단독 변경.
+app.patch('/api/lists/:id', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const id = +req.params.id;
+    const cid = req.user.center_id;
+    const { category, supplier_tg, auto_connect, is_active } = req.body;
+
+    const owner = await query(`SELECT center_id FROM customer_lists WHERE id=$1`, [id]);
+    if (owner.rows.length === 0) return res.status(404).json({ error: 'list not found' });
+    if (req.user.role === 'center_admin' && owner.rows[0].center_id !== cid) {
+      return res.status(403).json({ error: 'cross-center access denied' });
+    }
+
+    const sets = [];
+    const params = [];
+    let pi = 1;
+    if (category !== undefined)     { sets.push(`category=$${pi++}`);     params.push(category || null); }
+    if (supplier_tg !== undefined)  { sets.push(`supplier_tg=$${pi++}`);  params.push(supplier_tg || null); }
+    if (auto_connect !== undefined) { sets.push(`auto_connect=$${pi++}`); params.push(!!auto_connect); }
+    if (is_active !== undefined)    { sets.push(`is_active=$${pi++}`);    params.push(!!is_active); }
+    if (sets.length === 0) return res.json({ ok: true, unchanged: true });
+
+    params.push(id);
+    const { rows } = await query(
+      `UPDATE customer_lists SET ${sets.join(', ')} WHERE id=$${pi} RETURNING *`,
+      params
+    );
+    res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
