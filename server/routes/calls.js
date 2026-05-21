@@ -5,14 +5,24 @@ import { auth } from '../auth.js';
 const router = Router();
 
 // Get next customer for agent
+// 활성(is_active=true) DB 만, 활성화 최신순(uploaded_at DESC) 우선.
+// retry > pending, 같은 list 안에서는 id ASC. → [연결] 누르자마자 다음 콜부터 새 DB 번호.
 router.post('/next', auth, async (req, res) => {
   try {
     const cid = req.user.center_id;
     const agent = req.user.name?.replace('Agent ', '') || 'A';
     const { rows } = await query(
-      `SELECT id, name, phone_number, memo FROM customers
-       WHERE center_id=$1 AND assigned_agent=$2 AND status IN ('pending','retry')
-       ORDER BY CASE WHEN status='retry' THEN 0 ELSE 1 END, id LIMIT 1`,
+      `SELECT c.id, c.name, c.phone_number, c.memo
+         FROM customers c
+         INNER JOIN customer_lists cl ON c.list_id = cl.id
+        WHERE c.center_id=$1
+          AND c.assigned_agent=$2
+          AND c.status IN ('pending','retry')
+          AND cl.is_active = true
+        ORDER BY CASE WHEN c.status='retry' THEN 0 ELSE 1 END,
+                 cl.uploaded_at DESC,
+                 c.id ASC
+        LIMIT 1`,
       [cid, agent]
     );
     if (rows.length === 0) return res.json({ customer: null, message: 'No more customers' });

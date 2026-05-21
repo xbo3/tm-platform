@@ -47,7 +47,7 @@ router.post('/upload', auth, role('center_admin'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Distribute DB to agents
+// Distribute DB to agents (legacy alias; new code uses /api/dist/execute)
 router.post('/distribute', auth, role('center_admin'), async (req, res) => {
   try {
     const { list_id, distribution } = req.body; // distribution: {A:100, B:100, ...}
@@ -62,6 +62,13 @@ router.post('/distribute', auth, role('center_admin'), async (req, res) => {
       for (let i = 0; i < count && idx < pending.length; i++, idx++) {
         await query('UPDATE customers SET assigned_agent=$1 WHERE id=$2', [agent, pending[idx].id]);
       }
+    }
+    // 분배되면 활성 DB 가 되어야 NEXT CALL 큐에 들어옴 (calls.js is_active 필터)
+    if (idx > 0) {
+      await query(
+        `UPDATE customer_lists SET is_distributed=true, is_active=true WHERE id=$1`,
+        [list_id]
+      );
     }
     res.json({ distributed: idx });
   } catch (e) { res.status(500).json({ error: e.message }); }

@@ -156,6 +156,14 @@ export async function initDB() {
     throw e;
   }
 
+  // NEXT CALL is_active 필터 도입 — 진행 중 DB 백필 (5/21)
+  try {
+    await runMigration('006_backfill_active_lists.sql');
+  } catch (e) {
+    console.error('[migration] 006_backfill_active_lists.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {
