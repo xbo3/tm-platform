@@ -71,6 +71,22 @@ export default function ManagerView({ user }) {
 
   const toggleActive = (l) => updateList(l.id, { is_active: !l.is_active });
 
+  const recallList = async (l) => {
+    // 콜 친 번호는 회수 대상 아님 (status≠pending), 안 친 번호만 풀로 복귀
+    const ok = window.confirm(
+      `[${l.title}] 의 콜 안 친 번호를 회수하시겠습니까?\n` +
+      `(콜 친 번호는 그대로 보존됩니다)`
+    );
+    if (!ok) return;
+    try {
+      const r = await post('/dist/recall', { list_id: l.id });
+      window.alert(`${r.recalled}건 회수 완료`);
+      refresh();
+    } catch (e) {
+      window.alert('회수 실패: ' + e.message);
+    }
+  };
+
   const totals = data?.agents
     ? data.agents.reduce(
       (acc, a) => ({
@@ -379,6 +395,20 @@ export default function ManagerView({ user }) {
                   </label>
 
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    {/* [회수] — 안 친 번호 풀로 복귀 (콜 친 번호 보존) */}
+                    <button
+                      onClick={() => recallList(l)}
+                      title="안 친 번호 회수 (재분배 풀로 복귀, 콜 친 번호는 보존)"
+                      style={{
+                        padding: '6px 10px', fontSize: 11, fontWeight: 500,
+                        background: 'transparent',
+                        border: '1px solid var(--border)',
+                        borderRadius: 5,
+                        color: 'var(--text-dim)',
+                        cursor: 'pointer',
+                      }}>
+                      회수
+                    </button>
                     {/* [연결] / [소진] 토글 — 시안 6-bis */}
                     <button
                       onClick={() => toggleActive(l)}

@@ -335,7 +335,7 @@ export default function AgentView({ user }) {
                     }}>{STATUS_LABEL[c.status] || c.status}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
-                    <span>{c.name || '이름없음'}{c.list_title ? ` · ${c.list_title}` : ''}</span>
+                    <span>{c.name || '이름없음'}</span>
                     {c.memo && <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.memo}>📝 {c.memo}</span>}
                   </div>
                 </div>
