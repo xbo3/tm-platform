@@ -237,7 +237,7 @@ export default function ManagerView({ user }) {
             fontSize: 11, color: 'var(--text-dim)',
             display: 'flex', justifyContent: 'space-between',
           }}>
-            <span>📌 새 DB 업로드 시 중복 검사 자동 수행 (Phase D 작업 중)</span>
+            <span>📌 새 DB 업로드 시 사용한 번호 자동 중복 체크 — 중복 상세 표시</span>
             <span className="mono">{lists.length} DB 보유</span>
           </div>
         </div>
@@ -334,14 +334,49 @@ export default function ManagerView({ user }) {
 
           {uploadResult && (
             <div className="card elev" style={{ marginBottom: 10, padding: 10 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>업로드 결과</div>
-              <div style={{ display: 'flex', gap: 12, fontSize: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>업로드 결과</span>
+                <button onClick={() => setUploadResult(null)} style={{ background:'none', border:'none', color:'var(--text-dim)', cursor:'pointer', fontSize:11 }}>닫기</button>
+              </div>
+              <div style={{ display: 'flex', gap: 12, fontSize: 12, marginBottom: 6 }}>
                 <span>전체 <strong className="mono">{uploadResult.total}</strong></span>
                 <span style={{ color: 'var(--pos)' }}>유효 <strong className="mono">{uploadResult.valid}</strong></span>
                 <span style={{ color: 'var(--neg)' }}>오류 <strong className="mono">{uploadResult.invalid_phone}</strong></span>
                 <span style={{ color: 'var(--warn)' }}>중복 <strong className="mono">{uploadResult.duplicate}</strong></span>
                 <span style={{ color: 'var(--info)' }}>품질 <strong className="mono">{uploadResult.quality}%</strong></span>
               </div>
+
+              {/* 5/26 biplays spec — 어느 DB 에 몇 건 중복인지 집계 + 상세 detail */}
+              {uploadResult.duplicate > 0 && uploadResult.dup_by_list?.length > 0 && (
+                <div style={{ marginTop: 6, padding: 8, background: 'rgba(251,191,36,.06)', borderRadius: 6, borderLeft: '3px solid var(--warn)' }}>
+                  <div style={{ fontSize: 11, color: 'var(--warn)', fontWeight: 700, marginBottom: 4 }}>중복 발견 — 어느 DB 에 몇 건</div>
+                  {uploadResult.dup_by_list.map((d, i) => (
+                    <div key={i} style={{ fontSize: 11, color: 'var(--text)', marginBottom: 2 }}>
+                      <span style={{ color: 'var(--text-dim)' }}>·</span> {d.list} <strong className="mono">{d.count}건</strong>
+                      {d.connected > 0 && <span style={{ color: 'var(--pos)', marginLeft: 6 }}>연결 {d.connected}</span>}
+                      {d.no_answer > 0 && <span style={{ color: 'var(--warn)', marginLeft: 6 }}>부재 {d.no_answer}</span>}
+                      {d.invalid > 0 && <span style={{ color: 'var(--neg)', marginLeft: 6 }}>오류 {d.invalid}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 상세 — 처음 20건 phone/name/prev_list */}
+              {uploadResult.duplicate > 0 && uploadResult.dup_details?.length > 0 && (
+                <details style={{ marginTop: 6, fontSize: 11 }}>
+                  <summary style={{ cursor: 'pointer', color: 'var(--text-dim)' }}>중복 상세 ({Math.min(uploadResult.dup_details.length, 20)}건 보기)</summary>
+                  <div style={{ marginTop: 4, maxHeight: 180, overflowY: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                    {uploadResult.dup_details.slice(0, 20).map((d, i) => (
+                      <div key={i} style={{ padding: '3px 0', borderBottom: '1px dashed var(--border-soft)' }}>
+                        <span style={{ color: 'var(--info)' }}>{d.phone}</span>
+                        {d.name && <span style={{ color: 'var(--text)' }}> {d.name}</span>}
+                        <span style={{ color: 'var(--text-dim)' }}> · {d.prev_list}</span>
+                        {d.prev_status && <span style={{ color: 'var(--warn)' }}> [{d.prev_status}]</span>}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
 
