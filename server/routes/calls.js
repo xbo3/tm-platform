@@ -6,20 +6,26 @@ const router = Router();
 
 // Get next customer for agent
 // 활성(is_active=true) DB 만, 활성화 최신순(uploaded_at DESC) 우선.
-// retry > pending, 같은 list 안에서는 id ASC. → [연결] 누르자마자 다음 콜부터 새 DB 번호.
+// 5/26 biplays spec: 다음날 업무 스타트 시 어제 부재(no_answer) 부터 우선 배정.
+// 우선순위: retry (재콜 약속) > 어제 부재 (no_answer + updated_at < TODAY) > pending (신규) > 오늘 부재 (no_answer, updated_at = TODAY)
 router.post('/next', auth, async (req, res) => {
   try {
     const cid = req.user.center_id;
     const agent = req.user.name?.replace('Agent ', '') || 'A';
     const { rows } = await query(
-      `SELECT c.id, c.name, c.phone_number, c.memo
+      `SELECT c.id, c.name, c.phone_number, c.memo, c.status
          FROM customers c
          INNER JOIN customer_lists cl ON c.list_id = cl.id
         WHERE c.center_id=$1
           AND c.assigned_agent=$2
-          AND c.status IN ('pending','retry')
+          AND c.status IN ('pending','retry','no_answer')
           AND cl.is_active = true
-        ORDER BY CASE WHEN c.status='retry' THEN 0 ELSE 1 END,
+        ORDER BY CASE
+                   WHEN c.status='retry' THEN 0
+                   WHEN c.status='no_answer' AND c.updated_at::date < CURRENT_DATE THEN 1
+                   WHEN c.status='pending' THEN 2
+                   ELSE 3
+                 END,
                  cl.uploaded_at DESC,
                  c.id ASC
         LIMIT 1`,
