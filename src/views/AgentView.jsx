@@ -494,6 +494,36 @@ export default function AgentView({ user }) {
                       🔁 재콜 예약: {new Date(lastClassify.recall_time).toLocaleString('ko-KR')}
                     </div>
                   )}
+
+                  {/* 5/26 biplays spec — 거절 분석 + 멘트 교정 */}
+                  {lastClassify.rejection_reason && (
+                    <div style={{ marginTop: 10, padding: '8px 10px', background: 'rgba(239,68,68,.08)', borderLeft: '3px solid var(--neg)', borderRadius: 4 }}>
+                      <div style={{ fontSize: 11, color: 'var(--neg)', fontWeight: 700, marginBottom: 4 }}>
+                        거절 분석 — {lastClassify.rejection_reason}{lastClassify.swear_detected && ' · 욕설'}
+                      </div>
+                      {lastClassify.rejection_excerpt && (
+                        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>
+                          <span style={{ color: 'var(--text-faint)' }}>고객: </span>"{lastClassify.rejection_excerpt}"
+                        </div>
+                      )}
+                      {lastClassify.rejection_trigger && (
+                        <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                          <span style={{ color: 'var(--text-faint)' }}>직전 멘트: </span>"{lastClassify.rejection_trigger}"
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {lastClassify.suggested_replies && lastClassify.suggested_replies.length > 0 && (
+                    <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(16,185,129,.06)', borderLeft: '3px solid var(--pos)', borderRadius: 4 }}>
+                      <div style={{ fontSize: 11, color: 'var(--pos)', fontWeight: 700, marginBottom: 4 }}>💡 멘트 교정 제안</div>
+                      {lastClassify.suggested_replies.map((s, i) => (
+                        <div key={i} style={{ fontSize: 11, color: 'var(--text)', marginBottom: 2, paddingLeft: 6 }}>
+                          · {s}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {lastClassify.fallback_reason && (
                     <div style={{ marginTop: 6, fontSize: 10, color: 'var(--warn)' }}>
                       fallback: {lastClassify.fallback_reason}

@@ -164,6 +164,14 @@ export async function initDB() {
     throw e;
   }
 
+  // call_classifications analysis_meta JSON 컬럼 (거절 사유/멘트 교정/욕설 감지 — biplays 5/26)
+  try {
+    await runMigration('007_call_analysis_meta.sql');
+  } catch (e) {
+    console.error('[migration] 007_call_analysis_meta.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {

@@ -52,8 +52,9 @@ function computeHaikuCost(usage) {
   return +(i + o + cr + cc).toFixed(8);
 }
 
-const SYSTEM_PROMPT = `너는 한국어 텔레마케팅 통화 STT 텍스트를 6단계로 분류하는 분류기다.
-카테고리:
+const SYSTEM_PROMPT = `너는 한국어 텔레마케팅 통화 STT 텍스트를 분류하고 상담원에게 피드백을 주는 분석기다.
+
+카테고리 6종:
   - invalid    : 결번/없는 번호 (안내멘트/연결음만)
   - dormant    : 휴면 사용자 (수신 거부/오랜 미사용 의사)
   - no_answer  : 부재중 (연결됐으나 응답 없음/짧은 미수신)
@@ -63,10 +64,20 @@ const SYSTEM_PROMPT = `너는 한국어 텔레마케팅 통화 STT 텍스트를 
 
 출력은 JSON 한 줄. 반드시 다음 키:
   category: 위 6개 중 하나
-  confidence: 0.0~1.0 (네 확신도)
-  recall_at: ISO8601 또는 null. recall 일 때 통화에서 추론한 시간 (예 "내일 오후 2시" → 다음날 14:00)
-  positive_signals: 문자열 배열 또는 null. positive 일 때 추론 근거 키워드 ["주소문의","계좌질문" 등]
+  confidence: 0.0~1.0
+  recall_at: ISO8601 또는 null (recall 일 때 통화에서 추론한 시간)
+  positive_signals: 문자열 배열 또는 null (positive 추론 근거 키워드)
   summary: 한 문장 한국어 요약 (30자 이내)
+
+  // === 5/26 biplays spec 추가 ===
+  rejection_reason: 거절/욕 시 사유 분류 (null 또는 다음 중 1개):
+                    "관심없음" / "금액부담" / "시간없음" / "이미가입" / "욕설" / "기타"
+  rejection_excerpt: 거절/욕 발화 직접 인용 (STT 의 해당 문장 그대로, 100자 이내) 또는 null
+  rejection_trigger: 거절 직전 상담원 멘트 (STT 에서 추출, 100자 이내) 또는 null
+                     — 어떤 구간/멘트가 거절을 유발했는지 추적용
+  swear_detected: true/false — 욕설/막말 포함 여부
+  suggested_replies: 거절 발생 시 상담원이 사용할 수 있는 대안 표현 1~3개 배열 또는 null
+                     (한 줄당 25자 이내, 한국어, 텔레마케팅 톤. 예: "그러시군요, 그럼 5분만 들어보실래요?")
 
 JSON 외 다른 글자 금지. 마크다운 금지.`;
 
@@ -249,16 +260,34 @@ router.post('/:call_id', auth, async (req, res) => {
       ? parsed.positive_signals.slice(0, 10)
       : null;
     const summary = (parsed.summary || '').slice(0, 200) || null;
+    // 5/26 biplays spec — 거절 분석 + 멘트 교정
+    const rejection_reason = parsed.rejection_reason || null;
+    const rejection_excerpt = (parsed.rejection_excerpt || '').slice(0, 200) || null;
+    const rejection_trigger = (parsed.rejection_trigger || '').slice(0, 200) || null;
+    const swear_detected = !!parsed.swear_detected;
+    const suggested_replies = Array.isArray(parsed.suggested_replies)
+      ? parsed.suggested_replies.slice(0, 3).map(s => String(s).slice(0, 60))
+      : null;
 
     const final_stt_text = stt_text !== null ? stt_text : `[mock STT] duration=${dur}s — ${fallback_reason || 'fallback'}`;
 
     // 5) Persist (upsert by call_id)
+    // 거절 분석 + 멘트 교정 = analysis_meta JSON 컬럼 (스키마 마이그레이션 회피 위해 JSON 사용)
+    const analysis_meta = {
+      rejection_reason,
+      rejection_excerpt,
+      rejection_trigger,
+      swear_detected,
+      suggested_replies,
+      positive_signals,
+      summary,
+    };
     await query(`DELETE FROM call_classifications WHERE call_id=$1`, [call_id]);
     await query(
       `INSERT INTO call_classifications
-        (call_id, stt_text, ai_category, ai_confidence, recall_time)
-        VALUES ($1, $2, $3, $4, $5)`,
-      [call_id, final_stt_text, category, confidence, recall_at]
+        (call_id, stt_text, ai_category, ai_confidence, recall_time, analysis_meta)
+        VALUES ($1, $2, $3, $4, $5, $6)`,
+      [call_id, final_stt_text, category, confidence, recall_at, JSON.stringify(analysis_meta)]
     );
 
     // 6) Customer status sync
@@ -293,6 +322,12 @@ router.post('/:call_id', auth, async (req, res) => {
       stt_text: final_stt_text,
       summary,
       positive_signals,
+      // 5/26 biplays spec — 거절 분석 + 멘트 교정 응답
+      rejection_reason,
+      rejection_excerpt,
+      rejection_trigger,
+      swear_detected,
+      suggested_replies,
       fallback_reason,
       stt_meta: stt_meta
         ? {
