@@ -126,107 +126,89 @@ export default function ManagerView({ user }) {
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* HERO 알림판 — 좌 TM / 우 DB. biplays 5/21: 우 DB 더 크게 (내용 중요). */}
+      {/* HERO 2분할 — 좌 상담원 성과 / 우 DB 품질. 5/26 biplays "어렵고 복잡하지 않게" — gradient/pulse 톤다운, 핵심 수치만. */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 18 }}>
 
-        {/* 좌 — 당일 성과 (vs 전일) */}
+        {/* 좌 — 당일 성과 (상담원 성적 합계) */}
         <div className="card" style={{
-          background: 'linear-gradient(135deg, rgba(37,99,235,0.10), rgba(37,99,235,0.02))',
-          border: '1px solid var(--info-soft)',
-          padding: '22px 26px',
-          minHeight: 220,
+          padding: '18px 22px',
+          minHeight: 180,
           display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
         }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Led color="var(--info)" pulse />
-                <span style={{ fontSize: 12, color: 'var(--info)', fontWeight: 700, letterSpacing: '0.06em' }}>당일 성과 (vs 전일)</span>
-              </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: 'var(--text-dim)', fontWeight: 600 }}>당일 성과</span>
               <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
                 {new Date().toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit', weekday: 'short' })}
               </span>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 14 }}>
-              <span className="mono" style={{ fontSize: 56, fontWeight: 700, color: 'var(--info)', lineHeight: 1 }}>{totals.today_calls}</span>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 600 }}>오늘 총 콜</span>
-                {(() => {
-                  const d = delta(totals.today_calls, totals.y_calls);
-                  if (!d) return <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>전일 {totals.y_calls}</span>;
-                  return <span style={{ fontSize: 11, color: d.val > 0 ? 'var(--pos)' : 'var(--neg)', fontWeight: 600 }}>
-                    {d.sign}{d.val} vs 전일 {d.pct !== null ? `(${d.sign}${d.pct}%)` : ''}
-                  </span>;
-                })()}
-              </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+              <span className="mono" style={{ fontSize: 38, fontWeight: 700, color: 'var(--text)', lineHeight: 1 }}>{totals.today_calls}</span>
+              <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>총 콜</span>
+              {(() => {
+                const d = delta(totals.today_calls, totals.y_calls);
+                if (!d) return null;
+                return <span style={{ fontSize: 11, color: d.val > 0 ? 'var(--pos)' : 'var(--neg)', marginLeft: 'auto' }}>
+                  {d.sign}{d.val} vs 전일
+                </span>;
+              })()}
             </div>
           </div>
 
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
-            paddingTop: 12, borderTop: '1px solid var(--border-soft)',
+            paddingTop: 10, borderTop: '1px solid var(--border-soft)',
             fontSize: 12, color: 'var(--text-dim)',
           }}>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>연결</div>
-              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: 'var(--pos)' }}>
-                {totals.today_connected} <span style={{ fontSize: 10, color: 'var(--text-faint)', fontWeight: 400 }}>/ {totals.y_connected}</span>
-              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 2 }}>연결</div>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: 'var(--pos)' }}>{totals.today_connected}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>긍정</div>
-              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: 'var(--accent)' }}>
-                {totals.today_positive} <span style={{ fontSize: 10, color: 'var(--text-faint)', fontWeight: 400 }}>/ {totals.y_positive}</span>
-              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 2 }}>긍정</div>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: 'var(--accent)' }}>{totals.today_positive}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>연결률</div>
-              <div className="mono" style={{ fontSize: 18, fontWeight: 600, color: todayRate > 30 ? 'var(--pos)' : 'var(--text)' }}>
-                {todayRate}%
-              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 2 }}>연결률</div>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: todayRate > 30 ? 'var(--pos)' : 'var(--text)' }}>{todayRate}%</div>
             </div>
           </div>
         </div>
 
-        {/* 우 — DB 알림판 (더 크게, 내용 중요) */}
+        {/* 우 — DB 품질 실시간 소화 */}
         <div className="card" style={{
-          background: 'linear-gradient(135deg, rgba(176,122,54,0.10), rgba(176,122,54,0.02))',
-          border: '1px solid var(--accent-soft)',
-          padding: '24px 32px',
-          minHeight: 220,
+          padding: '18px 22px',
+          minHeight: 180,
           display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
         }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <Led color="var(--accent)" pulse />
-                <span style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 700, letterSpacing: '0.06em' }}>연결된 DB · 현황</span>
-              </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <span style={{ fontSize: 12, color: 'var(--text-dim)', fontWeight: 600 }}>DB 품질 실시간 소화</span>
               <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
                 총 {lists.reduce((s, l) => s + +l.total, 0).toLocaleString()}건 · 잔여 {totalRemaining.toLocaleString()}건
               </span>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>활성 DB</div>
-                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--accent)', lineHeight: 1 }}>{lists.filter(l => l.is_active).length}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>활성 DB</div>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--text)', lineHeight: 1 }}>{lists.filter(l => l.is_active).length}</div>
               </div>
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>연결</div>
-                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--pos)', lineHeight: 1 }}>{totals.connected}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>연결</div>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--pos)', lineHeight: 1 }}>{totals.connected}</div>
               </div>
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>긍정</div>
-                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--accent)', lineHeight: 1 }}>{totals.positive}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>긍정</div>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--accent)', lineHeight: 1 }}>{totals.positive}</div>
               </div>
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>결번</div>
-                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--neg)', lineHeight: 1 }}>{totals.invalid}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>결번</div>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--neg)', lineHeight: 1 }}>{totals.invalid}</div>
               </div>
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 4, fontWeight: 600 }}>긍정률</div>
-                <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: 'var(--accent-strong)', lineHeight: 1 }}>
+                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>긍정률</div>
+                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--accent-strong)', lineHeight: 1 }}>
                   {totals.calls > 0 ? +(totals.positive / totals.calls * 100).toFixed(1) : 0}%
                 </div>
               </div>
