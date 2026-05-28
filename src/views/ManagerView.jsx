@@ -18,6 +18,7 @@ export default function ManagerView({ user }) {
   const [distList, setDistList] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
+  const [smsUnread, setSmsUnread] = useState(0);
   const fileRef = useRef();
 
   const refresh = async () => {
@@ -37,6 +38,20 @@ export default function ManagerView({ user }) {
     refresh();
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
+  }, []);
+
+  // SMS 미읽음 카운트 — 30초 폴링
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const j = await get('/messages/summary');
+        if (alive) setSmsUnread(j.total_unread || 0);
+      } catch {}
+    };
+    tick();
+    const t = setInterval(tick, 30000);
+    return () => { alive = false; clearInterval(t); };
   }, []);
 
   const handleUpload = async (e) => {
@@ -137,7 +152,17 @@ export default function ManagerView({ user }) {
         }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-dim)', fontWeight: 600 }}>당일 성과</span>
+              <span style={{ fontSize: 12, color: 'var(--text-dim)', fontWeight: 600 }}>
+                당일 성과
+                {smsUnread > 0 && (
+                  <span style={{
+                    marginLeft: 10, padding: '2px 8px', borderRadius: 10,
+                    background: 'var(--neg)', color: '#fff', fontSize: 10, fontWeight: 600,
+                  }}>
+                    📩 미읽음 SMS {smsUnread}
+                  </span>
+                )}
+              </span>
               <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
                 {new Date().toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit', weekday: 'short' })}
               </span>

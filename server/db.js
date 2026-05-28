@@ -172,6 +172,14 @@ export async function initDB() {
     throw e;
   }
 
+  // customer_messages — SMS 수신/발신 (biplays 5/28)
+  try {
+    await runMigration('008_customer_messages.sql');
+  } catch (e) {
+    console.error('[migration] 008_customer_messages.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {

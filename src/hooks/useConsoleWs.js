@@ -21,6 +21,25 @@ export function useConsoleWs({ onEvent } = {}) {
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
 
+  // 이벤트 type 별 구독 버스 — 다수 컴포넌트가 동일 ws push 를 골라 받게.
+  const listenersRef = useRef(new Map()); // type -> Set<fn>
+  const dispatchToListeners = useCallback((msg) => {
+    const set = listenersRef.current.get(msg.type);
+    if (!set) return;
+    for (const fn of set) {
+      try { fn(msg); } catch (e) { /* swallow */ }
+    }
+  }, []);
+  const addListener = useCallback((type, fn) => {
+    let set = listenersRef.current.get(type);
+    if (!set) { set = new Set(); listenersRef.current.set(type, set); }
+    set.add(fn);
+    return () => {
+      const s = listenersRef.current.get(type);
+      if (s) { s.delete(fn); if (s.size === 0) listenersRef.current.delete(type); }
+    };
+  }, []);
+
   const connect = useCallback(() => {
     if (closedRef.current) return;
     const token = localStorage.getItem('tm_token');
@@ -52,6 +71,7 @@ export function useConsoleWs({ onEvent } = {}) {
         setLastError(msg.error || 'unknown');
       }
       onEventRef.current && onEventRef.current(msg);
+      dispatchToListeners(msg);
     };
     ws.onerror = () => {
       setLastError('ws error');
@@ -101,5 +121,5 @@ export function useConsoleWs({ onEvent } = {}) {
     [send]
   );
 
-  return { connected, deviceOnline, deviceId, lastError, sendDial, sendManualDial, sendHangup, send };
+  return { connected, deviceOnline, deviceId, lastError, sendDial, sendManualDial, sendHangup, send, addListener };
 }

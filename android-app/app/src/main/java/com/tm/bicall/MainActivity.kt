@@ -10,6 +10,7 @@ import android.os.Looper
 import android.util.Log
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -171,6 +172,9 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.CALL_PHONE,
             Manifest.permission.READ_PHONE_STATE,
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.RECEIVE_SMS,
+            Manifest.permission.READ_SMS,
         ).filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isEmpty()) startSession()
         else ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMS_REQ)
@@ -254,7 +258,64 @@ class MainActivity : AppCompatActivity() {
             "hangup" -> {
                 log("hangup · callId=${obj.opt("callId")} (ignored — 사용자 수동 종료 필요)")
             }
+            "sms_send" -> {
+                val msgId = obj.opt("message_id")
+                val phone = obj.optString("phone")
+                val content = obj.optString("content")
+                log("sms_send · $phone · message_id=$msgId")
+                Thread { handleSmsSend(msgId, phone, content) }.start()
+            }
             else -> Log.d("bicall", "unknown frame: $obj")
+        }
+    }
+
+    private fun handleSmsSend(messageId: Any?, phone: String?, content: String?) {
+        if (messageId == null || phone.isNullOrEmpty() || content.isNullOrEmpty()) {
+            reportSmsResult(messageId, ok = false, error = "missing fields")
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS)
+            != PackageManager.PERMISSION_GRANTED) {
+            reportSmsResult(messageId, ok = false, error = "SEND_SMS permission missing")
+            return
+        }
+        try {
+            val sms = android.telephony.SmsManager.getDefault()
+            val parts = sms.divideMessage(content)
+            if (parts.size == 1) {
+                sms.sendTextMessage(phone, null, parts[0], null, null)
+            } else {
+                sms.sendMultipartTextMessage(phone, null, parts, null, null)
+            }
+            reportSmsResult(messageId, ok = true, error = null)
+            log("sms sent · $phone")
+        } catch (e: Exception) {
+            Log.e("bicall", "sms send failed", e)
+            reportSmsResult(messageId, ok = false, error = e.message ?: "send_failed")
+        }
+    }
+
+    private fun reportSmsResult(messageId: Any?, ok: Boolean, error: String?) {
+        val prefs = Prefs.get(this)
+        val server = prefs.getString(Prefs.KEY_SERVER_URL, null) ?: return
+        val token = prefs.getString(Prefs.KEY_TOKEN, null) ?: return
+        val body = JSONObject().apply {
+            put("message_id", messageId)
+            put("ok", ok)
+            if (error != null) put("error", error)
+        }.toString()
+        try {
+            val req = Request.Builder()
+                .url(server.trimEnd('/') + "/api/phone/sms-result")
+                .addHeader("Authorization", "Bearer $token")
+                .addHeader("Content-Type", "application/json")
+                .post(body.toRequestBody("application/json".toMediaTypeOrNull()))
+                .build()
+            uploadHttp.newCall(req).execute().use { resp ->
+                Log.i("bicall", "sms-result post → ${resp.code}")
+            }
+        } catch (e: Exception) {
+            Log.w("bicall", "sms-result post failed: ${e.message}")
         }
     }
 

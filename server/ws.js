@@ -20,6 +20,43 @@ export function isDeviceOnline(deviceId) {
   return !!(ws && ws.readyState === ws.OPEN);
 }
 
+// HTTP routes 에서 폰에 명령 push (sms_send 등)
+// 반환값: 폰 도달 성공 여부
+export function sendToDevice(deviceId, payload) {
+  if (deviceId == null) return false;
+  const ws = devices.get(deviceId);
+  if (!ws || ws.readyState !== ws.OPEN) return false;
+  try {
+    ws.send(typeof payload === 'string' ? payload : JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 같은 center 의 모든 console (agent + center_admin) 에 broadcast
+// HTTP routes 가 SMS 인바운드/아웃바운드/상태 변경을 라이브 전파할 때
+export function broadcastToCenter(centerId, payload) {
+  if (centerId == null) return 0;
+  const frame = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  let n = 0;
+  for (const set of consoles.values()) {
+    for (const ws of set) {
+      if (ws.readyState !== ws.OPEN) continue;
+      const meta = ws._meta || {};
+      // meta 에 center_id 가 안 박혀있을 수 있어 — JWT user 의 center_id 를 connection 시 박는 추가 작업이 필요할 수도. 일단 phone_id 매칭으로 우회.
+      // 안전한 path: agentId 의 user.center_id 를 connection 시 _meta 에 저장.
+      if (meta.centerId === centerId) {
+        ws.send(frame);
+        n++;
+      }
+    }
+  }
+  return n;
+}
+
+// broadcastToAgent is internal; HTTP routes import broadcastToCenter / sendToDevice instead.
+
 function authFromRequest(req) {
   const { query } = parseUrl(req.url || '', true);
   const token = query?.token || (req.headers.authorization || '').replace('Bearer ', '');
@@ -161,7 +198,7 @@ export function attachWs(httpServer, options = {}) {
     let set = consoles.get(agentId);
     if (!set) { set = new Set(); consoles.set(agentId, set); }
     set.add(ws);
-    ws._meta = { kind: 'console', agentId, role: user.role, phone_id: user.phone_id };
+    ws._meta = { kind: 'console', agentId, role: user.role, phone_id: user.phone_id, centerId: user.center_id };
 
     const deviceOnline = !!(user.phone_id && devices.get(user.phone_id));
     safeSend(ws, {

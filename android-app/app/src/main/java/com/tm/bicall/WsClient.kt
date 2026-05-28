@@ -101,20 +101,38 @@ class WsClient(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                // Ignore callbacks from stale sockets — a newer dial() may have already
+                // replaced `ws`, in which case re-scheduling another reconnect on this
+                // old socket's close would compound the race.
+                if (webSocket !== this@WsClient.ws) {
+                    Log.i("bicall", "ws stale onClosed ignored: $code $reason")
+                    return
+                }
                 listener.onClose(code, reason)
-                scheduleReconnect()
+                scheduleReconnect(serverReplaced = (code == 1000 && reason == "replaced"))
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (webSocket !== this@WsClient.ws) {
+                    Log.i("bicall", "ws stale onFailure ignored: ${t.message}")
+                    return
+                }
                 listener.onError(t)
-                scheduleReconnect()
+                scheduleReconnect(serverReplaced = false)
             }
         })
     }
 
-    private fun scheduleReconnect() {
+    // When the server explicitly says "replaced", a second client owns this deviceId
+    // right now. Reconnecting fast just kicks them off and triggers the same race in
+    // reverse, so we wait 60 s — long enough for biplays / ops to clean up the stray
+    // app instance and short enough that a post-deploy reconnect still recovers.
+    private fun scheduleReconnect(serverReplaced: Boolean = false) {
         if (closed) return
-        val delayMs = (2000L * (1L shl minOf(attempt, 4))).coerceAtMost(30_000L)
+        val delayMs = when {
+            serverReplaced -> 60_000L
+            else -> (2000L * (1L shl minOf(attempt, 4))).coerceAtMost(30_000L)
+        }
         attempt++
         Thread {
             try { Thread.sleep(delayMs) } catch (_: InterruptedException) {}

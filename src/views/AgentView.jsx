@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { get, post, put } from '../api.js';
 import { Led, fmtTime } from '../components/widgets.jsx';
 import { useConsoleWs } from '../hooks/useConsoleWs.js';
+import SmsThread from '../components/SmsThread.jsx';
 
 const RESULT_OPTS = [
   { v: 'connected', label: '연결', color: 'var(--info)' },
@@ -153,7 +154,8 @@ export default function AgentView({ user }) {
       default: break;
     }
   }, []);
-  const { connected: wsConnected, deviceOnline, sendDial, sendManualDial } = useConsoleWs({ onEvent: onWsEvent });
+  const { connected: wsConnected, deviceOnline, sendDial, sendManualDial, addListener } = useConsoleWs({ onEvent: onWsEvent });
+  const wsBus = { addListener };
 
   const dialManual = () => {
     setWsErr(null);
@@ -535,6 +537,16 @@ export default function AgentView({ user }) {
           </div>
 
           {/* 우 하단 — 오토콜 토글 */}
+          {/* SMS 스레드 — 현재 선택된 고객 또는 통화 중 고객 */}
+          <div className="card" style={{ padding: 12, display: 'flex', flexDirection: 'column', minHeight: 200 }}>
+            <SmsThread
+              customerId={cur?.id || null}
+              phoneNumber={cur?.phone_number || null}
+              wsBus={wsBus}
+              compact={true}
+            />
+          </div>
+
           <div className="card" style={{
             padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>

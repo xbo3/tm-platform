@@ -4,13 +4,13 @@ import './styles/tokens.css';
 import Topbar from './components/Topbar.jsx';
 import AdminView from './views/AdminView.jsx';
 import ManagerView from './views/ManagerView.jsx';
-import LeadMonitorView from './views/LeadMonitorView.jsx';
 import AgentView from './views/AgentView.jsx';
 
+// 헤더 3 탭 (2026-05-20 정정): 슈퍼어드민 / 센터장 / 상담원
+// "실장" = "상담원" 동일어 (biplays 명시). lead_monitor role 폐기, LeadMonitorView 미사용
 function defaultViewForRole(role) {
   if (role === 'super_admin') return 'admin';
   if (role === 'center_admin') return 'manager';
-  if (role === 'lead_monitor') return 'lead';
   return 'agent';
 }
 
@@ -128,7 +128,6 @@ export default function App() {
       <Topbar user={user} view={view} onViewChange={setView} onLogout={logout} />
       {view === 'admin' && <AdminView user={user} />}
       {view === 'manager' && <ManagerView user={user} />}
-      {view === 'lead' && <LeadMonitorView user={user} />}
       {view === 'agent' && <AgentView user={user} />}
     </div>
   );

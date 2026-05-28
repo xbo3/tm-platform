@@ -3,15 +3,14 @@ import { useEffect, useState } from 'react';
 const VIEW_LABELS = {
   admin: { label: '슈퍼어드민', tag: '★ 전용' },
   manager: { label: '센터장', tag: 'VIEW' },
-  lead: { label: '실장', tag: 'VIEW' },
   agent: { label: '상담원', tag: 'VIEW' },
 };
 
-// role(super_admin/center_admin/agent/lead_monitor) 별로 노출 가능한 view
+// 헤더 3 탭 (2026-05-20 정정): 슈퍼어드민 / 센터장 / 상담원
+// "실장" = "상담원" 동일어 (biplays 명시). 이전 lead_monitor role 폐기
 function viewsForRole(role) {
-  if (role === 'super_admin') return ['admin', 'manager', 'lead', 'agent'];
-  if (role === 'center_admin') return ['manager', 'lead'];
-  if (role === 'lead_monitor') return ['lead'];
+  if (role === 'super_admin') return ['admin', 'manager', 'agent'];
+  if (role === 'center_admin') return ['manager'];
   if (role === 'agent') return ['agent'];
   return [];
 }

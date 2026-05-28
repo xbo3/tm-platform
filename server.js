@@ -20,6 +20,7 @@ import sipRouter from './server/routes/sip.js';
 import classifyRouter from './server/routes/classify.js';
 import suppliersRouter from './server/routes/suppliers.js';
 import adminRouter from './server/routes/admin.js';
+import messagesRouter from './server/routes/messages.js';
 
 import { startCron, stopCron } from './server/jobs.js';
 
@@ -857,6 +858,7 @@ app.use('/api/sip', sipRouter);
 app.use('/api/classify', classifyRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api', messagesRouter);
 
 // ── Static (SPA) ──
 app.use(express.static(join(__dirname, 'dist')));
