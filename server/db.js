@@ -140,43 +140,11 @@ export async function initDB() {
     throw e;
   }
 
-  // Per-user active flag (SuperAdmin per-agent 정지/재개)
+  // Run dedup migration (업로드 중복 자동제외 + 출처 기록)
   try {
-    await runMigration('004_user_active.sql');
+    await runMigration('004_dedup.sql');
   } catch (e) {
-    console.error('[migration] 004_user_active.sql failed:', e.message);
-    throw e;
-  }
-
-  // AI 분류 토큰/비용 누적 (Haiku 4.5 실측 비용 모니터)
-  try {
-    await runMigration('005_ai_usage.sql');
-  } catch (e) {
-    console.error('[migration] 005_ai_usage.sql failed:', e.message);
-    throw e;
-  }
-
-  // NEXT CALL is_active 필터 도입 — 진행 중 DB 백필 (5/21)
-  try {
-    await runMigration('006_backfill_active_lists.sql');
-  } catch (e) {
-    console.error('[migration] 006_backfill_active_lists.sql failed:', e.message);
-    throw e;
-  }
-
-  // call_classifications analysis_meta JSON 컬럼 (거절 사유/멘트 교정/욕설 감지 — biplays 5/26)
-  try {
-    await runMigration('007_call_analysis_meta.sql');
-  } catch (e) {
-    console.error('[migration] 007_call_analysis_meta.sql failed:', e.message);
-    throw e;
-  }
-
-  // customer_messages — SMS 수신/발신 (biplays 5/28)
-  try {
-    await runMigration('008_customer_messages.sql');
-  } catch (e) {
-    console.error('[migration] 008_customer_messages.sql failed:', e.message);
+    console.error('[migration] 004_dedup.sql failed:', e.message);
     throw e;
   }
 
