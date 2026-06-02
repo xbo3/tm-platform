@@ -378,7 +378,7 @@ export default function ManagerView({ user }) {
                         <span style={{ color: 'var(--info)' }}>{d.phone}</span>
                         {d.name && <span style={{ color: 'var(--text)' }}> {d.name}</span>}
                         <span style={{ color: 'var(--text-dim)' }}> · {d.prev_list}</span>
-                        {d.prev_status && <span style={{ color: 'var(--warn)' }}> [{d.prev_status}]</span>}
+                        {(d.feed || d.prev_status) && <span style={{ color: 'var(--warn)' }}> [{d.feed || d.prev_status}]</span>}
                       </div>
                     ))}
                   </div>
