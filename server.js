@@ -20,7 +20,6 @@ import sipRouter from './server/routes/sip.js';
 import classifyRouter from './server/routes/classify.js';
 import suppliersRouter from './server/routes/suppliers.js';
 import adminRouter from './server/routes/admin.js';
-import messagesRouter from './server/routes/messages.js';
 
 import { startCron, stopCron } from './server/jobs.js';
 
@@ -136,18 +135,9 @@ app.get('/api/dashboard/:cid', auth, requireRole('center_admin', 'super_admin'),
         (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='invalid') as invalid_count,
         (SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE agent=u.agent_name AND center_id=$1) as talk_time,
         (SELECT COUNT(*) FROM customers WHERE assigned_agent=u.agent_name AND center_id=$1 AND status='pending') as pending,
-        (SELECT COALESCE(AVG(duration_sec),0)::int FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as avg_conn_sec,
-        -- 오늘 (시안: 실장 성적 — 오늘 / 누적 분리)
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2) as today_calls,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2 AND result IN ('connected','positive')) as today_connected,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2 AND result='positive') as today_positive,
-        (SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2) as today_talk_time,
-        -- 전일 (delta 비교용)
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2::date - INTERVAL '1 day') as yesterday_calls,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2::date - INTERVAL '1 day' AND result IN ('connected','positive')) as yesterday_connected,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND started_at::date=$2::date - INTERVAL '1 day' AND result='positive') as yesterday_positive
+        (SELECT COALESCE(AVG(duration_sec),0)::int FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as avg_conn_sec
       FROM users u LEFT JOIN phones p ON u.phone_id=p.id
-      WHERE u.center_id=$1 AND u.role='agent' ORDER BY u.agent_name`, [cid, today]);
+      WHERE u.center_id=$1 AND u.role='agent' ORDER BY u.agent_name`, [cid]);
 
     // hourly per agent (today)
     const { rows: hourlyRows } = await query(`
@@ -220,38 +210,6 @@ app.get('/api/lists/:cid', auth, requireRole('center_admin', 'super_admin'), asy
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// PATCH /api/lists/:id — meta 갱신 (category / supplier_tg / auto_connect / is_active)
-// 시안의 [활성 ON/OFF] / [소진] 버튼을 위한 토글 + 카테고리/공급자 단독 변경.
-app.patch('/api/lists/:id', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
-  try {
-    const id = +req.params.id;
-    const cid = req.user.center_id;
-    const { category, supplier_tg, auto_connect, is_active } = req.body;
-
-    const owner = await query(`SELECT center_id FROM customer_lists WHERE id=$1`, [id]);
-    if (owner.rows.length === 0) return res.status(404).json({ error: 'list not found' });
-    if (req.user.role === 'center_admin' && owner.rows[0].center_id !== cid) {
-      return res.status(403).json({ error: 'cross-center access denied' });
-    }
-
-    const sets = [];
-    const params = [];
-    let pi = 1;
-    if (category !== undefined)     { sets.push(`category=$${pi++}`);     params.push(category || null); }
-    if (supplier_tg !== undefined)  { sets.push(`supplier_tg=$${pi++}`);  params.push(supplier_tg || null); }
-    if (auto_connect !== undefined) { sets.push(`auto_connect=$${pi++}`); params.push(!!auto_connect); }
-    if (is_active !== undefined)    { sets.push(`is_active=$${pi++}`);    params.push(!!is_active); }
-    if (sets.length === 0) return res.json({ ok: true, unchanged: true });
-
-    params.push(id);
-    const { rows } = await query(
-      `UPDATE customer_lists SET ${sets.join(', ')} WHERE id=$${pi} RETURNING *`,
-      params
-    );
-    res.json(rows[0]);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ── Phone validation + duplicate check ──
 function validatePhone(num) {
   if (!num) return { valid: false, reason: 'empty' };
@@ -266,26 +224,39 @@ function validatePhone(num) {
   return { valid: true, formatted: `${cleaned.slice(0, 3)}-${cleaned.slice(3, 7)}-${cleaned.slice(7)}` };
 }
 
+// "피드 있는(사용된) 번호" = 통화이력 보유 상태. 이게 있어야만 중복으로 인정.
+const FEED_STATUSES = ['no_answer', 'invalid', 'positive', 'done', 'recall', 'dormant', 'retry'];
+const FEED_LABEL = { no_answer: '부재', invalid: '결번', positive: '긍정', done: '통화완료', recall: '재통화', dormant: '휴면', retry: '재시도' };
+
+// 중복 판정: 같은 센터에서 "뒤 8자리"가 같은 기존 번호 중, 피드(통화이력) 있는 것을 우선 반환.
+// 피드 있는 매치가 없으면 (미사용끼리) null → 중복 아님 (biplays 규칙).
 async function checkDuplicate(phone, cid) {
+  const digits = String(phone).replace(/[^0-9]/g, '');
+  const l8 = digits.slice(-8);
+  if (l8.length < 8) return null;
   const { rows } = await query(
-    `SELECT c.id, c.list_id, c.status, c.no_answer_count, cl.title
+    `SELECT c.id, c.status, c.no_answer_count, cl.title,
+            (SELECT COUNT(*)::int FROM calls WHERE customer_id=c.id) AS call_count,
+            (SELECT COUNT(*)::int FROM calls WHERE customer_id=c.id AND result='connected') AS connected
        FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
-      WHERE c.phone_number=$1 AND c.center_id=$2 LIMIT 1`,
-    [phone, cid]
+      WHERE c.center_id=$2
+        AND RIGHT(regexp_replace(c.phone_number, '\\D', '', 'g'), 8) = $1
+      ORDER BY (CASE WHEN c.status = ANY($3) OR c.id IN (SELECT customer_id FROM calls) THEN 0 ELSE 1 END), c.id
+      LIMIT 1`,
+    [l8, cid, FEED_STATUSES]
   );
   if (rows.length === 0) return null;
   const r = rows[0];
-  const calls = await query(
-    `SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE result='connected')::int AS connected
-       FROM calls WHERE customer_id=$1`,
-    [r.id]
-  );
+  // 사용(피드) 여부: 통화이력 있거나 피드 상태일 때만 중복
+  const used = r.call_count > 0 || FEED_STATUSES.includes(r.status);
+  if (!used) return null;   // 미사용끼리의 중복은 중복 아님
   return {
     list_title: r.title,
     status: r.status,
+    feed_label: FEED_LABEL[r.status] || r.status,
     no_answer_count: r.no_answer_count,
-    call_count: calls.rows[0].n,
-    connected: calls.rows[0].connected,
+    call_count: r.call_count,
+    connected: r.connected,
     invalid: r.status === 'invalid' || r.status === 'invalid_pre',
   };
 }
@@ -305,7 +276,7 @@ async function ingestCustomers({ cid, title, source, customers, is_test }) {
       results.duplicate++;
       results.dup_details.push({
         phone: chk.formatted, name: cu.name, prev_list: dup.list_title,
-        prev_status: dup.status, was_invalid: dup.invalid,
+        prev_status: dup.status, feed: dup.feed_label, was_invalid: dup.invalid,
         no_answer: dup.no_answer_count, calls: dup.call_count, connected: dup.connected,
       });
       continue;
@@ -858,7 +829,6 @@ app.use('/api/sip', sipRouter);
 app.use('/api/classify', classifyRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/admin', adminRouter);
-app.use('/api', messagesRouter);
 
 // ── Static (SPA) ──
 app.use(express.static(join(__dirname, 'dist')));
