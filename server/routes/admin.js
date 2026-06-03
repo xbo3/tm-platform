@@ -1,9 +1,71 @@
 import { Router } from 'express';
 import { query } from '../db.js';
+import pool from '../db.js';
 import { auth, requireRole } from '../auth.js';
 import { isDeviceOnline } from '../ws.js';
 
 const router = Router();
+
+// POST /api/admin/connect-list  { list_id }
+// 센터장이 DB 목록에서 '연결(실행)' → 그 DB만 단독 활성(배타). 기존 활성 DB는 진행된 번호/피드/
+// 담당 상담원 기록을 그대로 보존한 채 비활성으로 멈춘다. 상담원은 교체를 모르고 다음 샌드부터 새 DB.
+router.post('/connect-list', auth, requireRole('super_admin', 'center_admin'), async (req, res) => {
+  const { list_id } = req.body;
+  if (!list_id) return res.status(400).json({ error: 'list_id required' });
+  const cid = req.user.center_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tgt = await client.query(
+      `SELECT id FROM customer_lists WHERE id=$1 AND center_id=$2 FOR UPDATE`,
+      [list_id, cid]
+    );
+    if (tgt.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'List not found' });
+    }
+    // 배타: 이 센터의 다른 모든 DB 비활성 (is_active 플래그만 off, 기록 불변)
+    await client.query(
+      `UPDATE customer_lists SET is_active=false WHERE center_id=$1 AND id<>$2 AND is_active=true`,
+      [cid, list_id]
+    );
+    // 선택 DB 단독 활성 (풀 분배라 사전 5분할 불필요 — is_distributed 만 표식)
+    await client.query(
+      `UPDATE customer_lists SET is_active=true, is_distributed=true WHERE id=$1`,
+      [list_id]
+    );
+    await client.query(
+      `INSERT INTO distribution_events (list_id, category, total_distributed, split_json, triggered_by)
+       VALUES ($1, NULL, 0, '{}', 'connect')`,
+      [list_id]
+    );
+    await client.query('COMMIT');
+    res.json({ ok: true, active_list_id: list_id });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+
+// GET/POST /api/admin/noans-limit — 센터장이 부재 임계값(2 또는 3) 조회/설정.
+// 설정은 이후 업로드되는 DB 부터 스냅샷으로 적용("결정 이후 자료부터"). 기존 DB 불변.
+router.get('/noans-limit', auth, requireRole('super_admin', 'center_admin'), async (req, res) => {
+  try {
+    const { rows } = await query('SELECT COALESCE(no_answer_limit, 3) AS n FROM centers WHERE id=$1', [req.user.center_id]);
+    res.json({ no_answer_limit: rows[0]?.n || 3 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/noans-limit', auth, requireRole('super_admin', 'center_admin'), async (req, res) => {
+  try {
+    const limit = parseInt(req.body.limit, 10);
+    if (![2, 3].includes(limit)) return res.status(400).json({ error: 'limit must be 2 or 3' });
+    await query('UPDATE centers SET no_answer_limit=$1 WHERE id=$2', [limit, req.user.center_id]);
+    res.json({ ok: true, no_answer_limit: limit, note: '이후 업로드되는 DB 부터 적용 (기존 DB 불변)' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // 품질 점수 가중치 — env 로 조정 가능. 슈퍼어드민 비공개 정책.
 function loadFormula() {

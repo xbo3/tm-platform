@@ -128,6 +128,11 @@ router.post('/execute', auth, requireRole('super_admin', 'center_admin'), async 
       }
     }
 
+    // 배타적 활성화: 분배=연결이므로 이 센터의 기존 활성 DB 는 먼저 끈다 (항상 1개만 active).
+    await query(
+      `UPDATE customer_lists SET is_active=false WHERE center_id=$1 AND id<>$2 AND is_active=true`,
+      [cid, list_id]
+    );
     // customer_lists 메타 갱신
     await query(
       `UPDATE customer_lists

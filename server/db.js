@@ -148,6 +148,14 @@ export async function initDB() {
     throw e;
   }
 
+  // no_answer_limit — 부재 임계값 센터 설정 + 리스트별 스냅샷 (biplays 6/03)
+  try {
+    await runMigration('009_noans_limit.sql');
+  } catch (e) {
+    console.error('[migration] 009_noans_limit.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {

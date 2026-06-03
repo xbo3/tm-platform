@@ -34,8 +34,11 @@ router.post('/upload', auth, role('center_admin'), async (req, res) => {
   try {
     const { title, source, is_test, customers } = req.body;
     const cid = req.user.center_id;
+    // 업로드 시점의 센터 부재 임계값을 이 DB 에 스냅샷("결정 이후 자료부터" 적용).
     const list = await query(
-      'INSERT INTO customer_lists (center_id,title,source,is_test,total_count) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+      `INSERT INTO customer_lists (center_id,title,source,is_test,total_count,no_answer_limit)
+       VALUES ($1,$2,$3,$4,$5, COALESCE((SELECT no_answer_limit FROM centers WHERE id=$1), 3))
+       RETURNING *`,
       [cid, title, source, is_test || false, customers.length]
     );
     const lid = list.rows[0].id;
@@ -63,8 +66,13 @@ router.post('/distribute', auth, role('center_admin'), async (req, res) => {
         await query('UPDATE customers SET assigned_agent=$1 WHERE id=$2', [agent, pending[idx].id]);
       }
     }
-    // 분배되면 활성 DB 가 되어야 NEXT CALL 큐에 들어옴 (calls.js is_active 필터)
+    // 분배되면 활성 DB 가 되어야 NEXT CALL 풀에 들어옴 (calls.js 는 is_active 연결DB 풀 분배).
+    // 배타적 활성화: 이 센터의 기존 활성 DB 는 먼저 끈다 (항상 1개만 active).
     if (idx > 0) {
+      await query(
+        `UPDATE customer_lists SET is_active=false WHERE center_id=$1 AND id<>$2 AND is_active=true`,
+        [cid, list_id]
+      );
       await query(
         `UPDATE customer_lists SET is_distributed=true, is_active=true WHERE id=$1`,
         [list_id]

@@ -59,8 +59,8 @@ async function autoConnectCheck() {
         }
       }
 
-      // 이전 list 비활성, 새 list 활성
-      await query(`UPDATE customer_lists SET is_active=false WHERE id=$1`, [list.id]);
+      // 이전 list(들) 비활성, 새 list 활성 — 센터 내 항상 1개만 active (배타)
+      await query(`UPDATE customer_lists SET is_active=false WHERE center_id=$1 AND id<>$2 AND is_active=true`, [list.center_id, nextId]);
       await query(`UPDATE customer_lists SET is_distributed=true, is_active=true WHERE id=$1`, [nextId]);
       await query(
         `INSERT INTO distribution_events (list_id, category, total_distributed, split_json, triggered_by)
@@ -74,13 +74,16 @@ async function autoConnectCheck() {
   }
 }
 
-// 매 10분: 휴면 승격 — no_answer_count >= 3 인 customer 를 dormant 로
+// 매 10분: 휴면 승격 — 부재 횟수가 리스트별 임계값(no_answer_limit, 기본 3) 이상이면 dormant(장기미연결)
 async function dormantPromotion() {
   try {
     const { rowCount } = await query(`
-      UPDATE customers
+      UPDATE customers cu
          SET status='dormant', dormant_since=NOW(), updated_at=NOW()
-       WHERE no_answer_count >= 3 AND status NOT IN ('dormant','done','positive','invalid','invalid_pre')`);
+        FROM customer_lists cl
+       WHERE cu.list_id = cl.id
+         AND cu.no_answer_count >= COALESCE(cl.no_answer_limit, 3)
+         AND cu.status NOT IN ('dormant','done','positive','invalid','invalid_pre')`);
     if (rowCount > 0) console.log(`[cron dormant] promoted ${rowCount} customers`);
   } catch (e) {
     console.error('[cron dormant] error:', e.message);
