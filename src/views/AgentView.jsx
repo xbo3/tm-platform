@@ -202,11 +202,11 @@ export default function AgentView({ user }) {
     }
   }, [wsConnected, deviceOnline, sendDial, cancelAutoCall]);
 
-  // 오토콜 트리거 — 통화 idle 진입 + autoCallOn 일 때
+  // 오토콜(오토샌드) 트리거 — 통화 idle 진입 + autoCallOn 일 때. 상담완료 후 5초 뒤 다음콜.
   const scheduleAutoCall = useCallback(() => {
     if (!autoCallOn) return;
     cancelAutoCall();
-    const wait = 10 + Math.floor(Math.random() * 21); // 10~30초
+    const wait = 5; // 오토샌드: 상담완료 후 5초 (biplays 6/03)
     setAutoCountdown(wait);
     autoIntervalRef.current = setInterval(() => {
       setAutoCountdown(p => Math.max(0, p - 1));
@@ -235,8 +235,14 @@ export default function AgentView({ user }) {
       setCur(null);
       setCallId(null);
       refresh();
-      // 오토콜
-      scheduleAutoCall();
+      // 결번(invalid) = 통화 없이 끝났으니 모드 무관 즉시 다음콜(시간효율 극대화).
+      // 그 외 = 오토샌드 모드일 때만 5초 후 다음콜.
+      if (result === 'invalid') {
+        cancelAutoCall();
+        autoTimerRef.current = setTimeout(() => { autoTimerRef.current = null; next(); }, 400);
+      } else {
+        scheduleAutoCall();
+      }
     } catch (e) { window.alert(e.message); }
     finally { setClassifying(false); }
   };

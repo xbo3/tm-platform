@@ -16,6 +16,7 @@ router.get('/dashboard', auth, role('center_admin'), async (req, res) => {
         p.sip_account, p.status as phone_status,
         (SELECT COUNT(*) FROM calls WHERE agent=REPLACE(u.name,'Agent ','') AND center_id=$1 AND started_at::date=$2) as calls,
         (SELECT COUNT(*) FROM calls WHERE agent=REPLACE(u.name,'Agent ','') AND center_id=$1 AND started_at::date=$2 AND result='connected') as connected,
+        (SELECT COUNT(*) FROM calls WHERE agent=REPLACE(u.name,'Agent ','') AND center_id=$1 AND started_at::date=$2 AND result='invalid') as invalid_calls,
         (SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE agent=REPLACE(u.name,'Agent ','') AND center_id=$1 AND started_at::date=$2 AND result='connected') as talk_time,
         (SELECT COUNT(*) FROM customers WHERE assigned_agent=REPLACE(u.name,'Agent ','') AND center_id=$1 AND status='no_answer') as no_answer,
         (SELECT COUNT(*) FROM customers WHERE assigned_agent=REPLACE(u.name,'Agent ','') AND center_id=$1 AND no_answer_count=1) as no_answer_1,
@@ -42,15 +43,20 @@ router.get('/dashboard', auth, role('center_admin'), async (req, res) => {
     const totalTalk = agents.reduce((a, b) => a + parseInt(b.talk_time), 0);
     const totalNA = agents.reduce((a, b) => a + parseInt(b.no_answer), 0);
     const totalInv = agents.reduce((a, b) => a + parseInt(b.invalid), 0);
+    // 결번(invalid) 콜은 연결률 분모에서 제외 — 결번 필터링이 상담원 실적을 깎지 않도록 분리.
+    const totalInvCalls = agents.reduce((a, b) => a + parseInt(b.invalid_calls || 0), 0);
 
     res.json({
-      agents: agents.map(a => ({
-        ...a,
-        rate: a.calls > 0 ? ((a.connected / a.calls) * 100).toFixed(1) : 0,
-      })),
+      agents: agents.map(a => {
+        const effCalls = (parseInt(a.calls) || 0) - (parseInt(a.invalid_calls) || 0); // 결번 제외 분모
+        return {
+          ...a,
+          rate: effCalls > 0 ? ((a.connected / effCalls) * 100).toFixed(1) : 0,
+        };
+      }),
       hourly,
       totals: { calls: totalCalls, connected: totalConn, talk_time: totalTalk, no_answer: totalNA, invalid: totalInv,
-        rate: totalCalls > 0 ? ((totalConn / totalCalls) * 100).toFixed(1) : 0 },
+        rate: (totalCalls - totalInvCalls) > 0 ? ((totalConn / (totalCalls - totalInvCalls)) * 100).toFixed(1) : 0 },
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

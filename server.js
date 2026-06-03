@@ -401,6 +401,8 @@ app.post('/api/customers/distribute', auth, requireRole('center_admin'), async (
         await query(`UPDATE customers SET assigned_agent=$1, updated_at=NOW() WHERE id=$2`, [a, pool[idx].id]);
       }
     }
+    // 배타적 활성화: 이 센터의 기존 활성 DB 는 먼저 끈다 (항상 1개만 active).
+    await query(`UPDATE customer_lists SET is_active=false WHERE center_id=$1 AND id<>$2 AND is_active=true`, [cid, list_id]);
     await query(`UPDATE customer_lists SET is_distributed=true, is_active=true WHERE id=$1`, [list_id]);
     await query(
       `INSERT INTO distribution_events (list_id, total_distributed, split_json, triggered_by) VALUES ($1, $2, $3, 'manual')`,
