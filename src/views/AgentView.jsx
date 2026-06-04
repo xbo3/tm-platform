@@ -477,7 +477,34 @@ export default function AgentView({ user }) {
               )}
               {callState === 'idle' && lastClassify && (
                 <>
-                  {lastClassify.summary && (
+                  {/* 통화 요약 카드 (카톡/갤럭시식) — 흐름 / 핵심 / 다음할일 */}
+                  {((lastClassify.summary_lines && lastClassify.summary_lines.length > 0) ||
+                    (lastClassify.key_points && lastClassify.key_points.length > 0) ||
+                    lastClassify.next_action) ? (
+                    <div style={{ marginBottom: 10, padding: '10px 12px', background: 'var(--bg-soft)', borderLeft: '3px solid var(--info)', borderRadius: 5 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--info)', marginBottom: 6 }}>📞 통화 요약</div>
+                      {lastClassify.summary_lines && lastClassify.summary_lines.map((ln, i) => (
+                        <div key={i} style={{ fontSize: 11.5, color: 'var(--text)', marginBottom: 3, paddingLeft: 4 }}>
+                          · {ln}
+                        </div>
+                      ))}
+                      {lastClassify.key_points && lastClassify.key_points.length > 0 && (
+                        <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {lastClassify.key_points.map((kp, i) => (
+                            <span key={i} className="tag" style={{
+                              fontSize: 10, padding: '2px 7px',
+                              background: 'var(--info)' + '1a', color: 'var(--info)',
+                            }}>{kp}</span>
+                          ))}
+                        </div>
+                      )}
+                      {lastClassify.next_action && (
+                        <div style={{ marginTop: 7, fontSize: 11, color: 'var(--text)', fontWeight: 600 }}>
+                          ✅ 다음 할일: <span style={{ color: 'var(--accent)' }}>{lastClassify.next_action}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : lastClassify.summary && (
                     <div style={{ marginBottom: 10, padding: '8px 10px', background: 'var(--bg-soft)', borderRadius: 5, color: 'var(--text)' }}>
                       📌 {lastClassify.summary}
                     </div>

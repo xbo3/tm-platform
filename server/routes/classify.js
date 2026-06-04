@@ -69,6 +69,15 @@ const SYSTEM_PROMPT = `너는 한국어 텔레마케팅 통화 STT 텍스트를 
   positive_signals: 문자열 배열 또는 null (positive 추론 근거 키워드)
   summary: 한 문장 한국어 요약 (30자 이내)
 
+  // === 통화 요약 (카톡/갤럭시식) — 상담원이 통화 안 듣고도 한눈에 ===
+  summary_lines: 통화 흐름 요약 배열 2~4줄 (각 줄 60자 이내, 시간순 핵심 흐름).
+                 예: ["상담원이 신규 이벤트 안내", "고객이 기존 A사 이용 중이라 답함", "오후 2시 재통화 희망"]
+                 통화 내용이 거의 없으면(부재/결번) 빈 배열 [].
+  key_points: 통화에서 뽑은 핵심 포인트 배열 0~5개 (각 40자 이내). 고객의 요청·상태·중요정보 위주.
+              예: ["오후 2시 재콜 요청", "기존 A사 이용중", "가입의사 있음"]. 없으면 [].
+  next_action: 상담원이 다음에 할 일 한 줄 (40자 이내) 또는 null.
+               예: "5/22 14:00 재콜", "계좌번호 문자 발송", "관심없음 — 종결"
+
   // === 5/26 biplays spec 추가 ===
   rejection_reason: 거절/욕 시 사유 분류 (null 또는 다음 중 1개):
                     "관심없음" / "금액부담" / "시간없음" / "이미가입" / "욕설" / "기타"
@@ -120,7 +129,7 @@ async function callHaiku(stt_text, callMeta) {
   const t0 = Date.now();
   const resp = await client.messages.create({
     model: HAIKU_MODEL,
-    max_tokens: 500,
+    max_tokens: 800,
     temperature: 0.1,
     system: SYSTEM_PROMPT,
     messages: [{ role: 'user', content: userMsg }],
@@ -260,6 +269,14 @@ router.post('/:call_id', auth, async (req, res) => {
       ? parsed.positive_signals.slice(0, 10)
       : null;
     const summary = (parsed.summary || '').slice(0, 200) || null;
+    // 통화 요약 (카톡식) — 흐름 / 핵심포인트 / 다음할일
+    const summary_lines = Array.isArray(parsed.summary_lines)
+      ? parsed.summary_lines.slice(0, 4).map((s) => String(s).slice(0, 80)).filter(Boolean)
+      : [];
+    const key_points = Array.isArray(parsed.key_points)
+      ? parsed.key_points.slice(0, 5).map((s) => String(s).slice(0, 60)).filter(Boolean)
+      : [];
+    const next_action = (parsed.next_action || '').toString().slice(0, 80) || null;
     // 5/26 biplays spec — 거절 분석 + 멘트 교정
     const rejection_reason = parsed.rejection_reason || null;
     const rejection_excerpt = (parsed.rejection_excerpt || '').slice(0, 200) || null;
@@ -281,6 +298,9 @@ router.post('/:call_id', auth, async (req, res) => {
       suggested_replies,
       positive_signals,
       summary,
+      summary_lines,
+      key_points,
+      next_action,
     };
     await query(`DELETE FROM call_classifications WHERE call_id=$1`, [call_id]);
     await query(
@@ -321,6 +341,9 @@ router.post('/:call_id', auth, async (req, res) => {
       recall_time: recall_at,
       stt_text: final_stt_text,
       summary,
+      summary_lines,
+      key_points,
+      next_action,
       positive_signals,
       // 5/26 biplays spec — 거절 분석 + 멘트 교정 응답
       rejection_reason,
