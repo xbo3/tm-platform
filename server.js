@@ -128,14 +128,101 @@ app.get('/api/dashboard/:cid', auth, requireRole('center_admin', 'super_admin'),
     const { rows: agents } = await query(`
       SELECT u.id, u.name, u.agent_name, u.phone_id,
         p.sip_account, p.status as phone_status,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1) as total_calls,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as connected,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='positive') as positive,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='no_answer') as no_answer,
-        (SELECT COUNT(*) FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result='invalid') as invalid_count,
-        (SELECT COALESCE(SUM(duration_sec),0) FROM calls WHERE agent=u.agent_name AND center_id=$1) as talk_time,
-        (SELECT COUNT(*) FROM customers WHERE assigned_agent=u.agent_name AND center_id=$1 AND status='pending') as pending,
-        (SELECT COALESCE(AVG(duration_sec),0)::int FROM calls WHERE agent=u.agent_name AND center_id=$1 AND result IN ('connected','positive')) as avg_conn_sec
+        -- 활성 DB 기준 누적 콜수
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true) as total_calls,
+        -- 활성 DB 기준 누적 연결수
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result IN ('connected','positive')) as connected,
+        -- 활성 DB 기준 누적 긍정수
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result = 'positive') as positive,
+        -- 활성 DB 기준 누적 부재수
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result = 'no_answer') as no_answer,
+        -- 활성 DB 기준 누적 결번수
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result = 'invalid') as invalid_count,
+        -- 활성 DB 기준 누적 통화 시간
+        (SELECT COALESCE(SUM(duration_sec),0) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true) as talk_time,
+        -- 활성 DB 기준 상담원 큐 잔여
+        (SELECT COUNT(*) FROM customers cu
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE cu.assigned_agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND cu.status = 'pending') as pending,
+        -- 활성 DB 기준 평균 통화 시간
+        (SELECT COALESCE(AVG(duration_sec),0)::int FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result IN ('connected','positive')) as avg_conn_sec,
+
+        -- 당일(KST 업무일 기준 오늘) 활성 DB 실적
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND ((c.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date 
+                = (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)) as today_calls,
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result IN ('connected','positive')
+            AND ((c.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date 
+                = (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)) as today_connected,
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result = 'positive'
+            AND ((c.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date 
+                = (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)) as today_positive,
+        (SELECT COALESCE(SUM(duration_sec),0) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND ((c.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date 
+                = (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)) as today_talk_time,
+
+        -- 전일(KST 업무일 기준 어제) 활성 DB 실적
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND ((c.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date 
+                = (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '34 hours')::date)) as yesterday_calls,
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result IN ('connected','positive')
+            AND ((c.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date 
+                = (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '34 hours')::date)) as yesterday_connected,
+        (SELECT COUNT(*) FROM calls c
+           JOIN customers cu ON c.customer_id = cu.id
+           JOIN customer_lists cl ON cu.list_id = cl.id
+          WHERE c.agent = u.agent_name AND cl.center_id = $1 AND cl.is_active = true
+            AND c.result = 'positive'
+            AND ((c.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date 
+                = (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '34 hours')::date)) as yesterday_positive
       FROM users u LEFT JOIN phones p ON u.phone_id=p.id
       WHERE u.center_id=$1 AND u.role='agent' ORDER BY u.agent_name`, [cid]);
 
