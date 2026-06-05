@@ -119,9 +119,20 @@ router.put('/:id/end', auth, async (req, res) => {
       if (result === 'connected') {
         await query('UPDATE customers SET status=$1, updated_at=NOW() WHERE id=$2', ['done', c.customer_id]);
       } else if (result === 'no_answer') {
-        // 부재 1회 카운트 + updated_at=NOW() (KST 업무일 경계 게이트의 기준 시각).
-        const cust = await query('UPDATE customers SET no_answer_count=no_answer_count+1, updated_at=NOW() WHERE id=$1 RETURNING no_answer_count', [c.customer_id]);
-        const count = cust.rows[0].no_answer_count;
+        // 고유 부재일수(KST 업무일 기준 COUNT DISTINCT) 계산 및 업데이트 + updated_at=NOW()
+        const cust = await query(
+          `UPDATE customers cu
+              SET no_answer_count = (
+                SELECT COUNT(DISTINCT ((started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)
+                  FROM calls
+                 WHERE customer_id = cu.id AND result = 'no_answer'
+              ),
+              updated_at = NOW()
+            WHERE id = $1
+            RETURNING no_answer_count`,
+          [c.customer_id]
+        );
+        const count = cust.rows[0]?.no_answer_count || 0;
         // 임계값 = 이 번호가 속한 DB(리스트)의 스냅샷값(없으면 센터 현재값, 그것도 없으면 3).
         const lim = await query(
           `SELECT COALESCE(cl.no_answer_limit, ce.no_answer_limit, 3) AS n

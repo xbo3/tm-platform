@@ -77,6 +77,19 @@ async function autoConnectCheck() {
 // 매 10분: 휴면 승격 — 부재 횟수가 리스트별 임계값(no_answer_limit, 기본 3) 이상이면 dormant(장기미연결)
 async function dormantPromotion() {
   try {
+    // 1) 먼저, 현재 진행 중인 고객 중 부재 기록이 있는 모든 고객의 no_answer_count를
+    // calls 테이블의 고유 부재 업무일수 기준으로 최신 동기화한다.
+    await query(`
+      UPDATE customers cu
+         SET no_answer_count = (
+           SELECT COUNT(DISTINCT ((started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)
+             FROM calls
+            WHERE customer_id = cu.id AND result = 'no_answer'
+         )
+       WHERE cu.status NOT IN ('dormant','done','positive','invalid','invalid_pre')
+         AND EXISTS (SELECT 1 FROM calls WHERE customer_id = cu.id AND result = 'no_answer')`);
+
+    // 2) 동기화된 카운트가 임계값 이상인 대상을 dormant(휴면) 처리
     const { rowCount } = await query(`
       UPDATE customers cu
          SET status='dormant', dormant_since=NOW(), updated_at=NOW()
