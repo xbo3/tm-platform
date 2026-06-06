@@ -12,7 +12,7 @@ import XLSX from 'xlsx';
 
 import { query, initDB } from './server/db.js';
 import { auth, requireRole, generateToken } from './server/auth.js';
-import { attachWs } from './server/ws.js';
+import { attachWs, isDeviceOnline } from './server/ws.js';
 
 // v8 routes
 import distRouter from './server/routes/dist.js';
@@ -236,7 +236,10 @@ app.get('/api/dashboard/:cid', auth, requireRole('center_admin', 'super_admin'),
       if (!hourlyByAgent[r.agent]) hourlyByAgent[r.agent] = Array(24).fill(0);
       hourlyByAgent[r.agent][r.hour] = r.calls;
     }
-    agents.forEach(a => { a.hourly = hourlyByAgent[a.agent_name] || Array(24).fill(0); });
+    agents.forEach(a => {
+      a.online = isDeviceOnline(a.phone_id);
+      a.hourly = hourlyByAgent[a.agent_name] || Array(24).fill(0);
+    });
 
     const { rows: lists } = await query(`
       SELECT cl.*,

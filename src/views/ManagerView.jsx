@@ -292,7 +292,24 @@ export default function ManagerView({ user }) {
                   <tr key={a.agent_name}>
                     <td className="mono dim">{i + 1}</td>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{a.name}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontWeight: 600 }}>{a.name}</span>
+                        {a.online ? (
+                          a.phone_status === 'calling' ? (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--neg)', fontWeight: 600 }}>
+                              <Led color="var(--neg)" size={8} pulse /> 통화 중
+                            </span>
+                          ) : (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--pos)', fontWeight: 600 }}>
+                              <Led color="var(--pos)" size={8} /> 대기 중
+                            </span>
+                          )
+                        ) : (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-faint)' }}>
+                            <Led color="var(--text-faint)" size={8} /> 오프라인
+                          </span>
+                        )}
+                      </div>
                       <div style={{ fontSize: 10, color: 'var(--text-faint)' }} className="mono">{a.agent_name} · {a.sip_account || '-'}</div>
                     </td>
                     <td className="mono" style={{ textAlign: 'right' }}>{todayCalls}</td>
