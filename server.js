@@ -300,6 +300,9 @@ app.get('/api/lists/:cid', auth, requireRole('center_admin', 'super_admin'), asy
       l.reach_rate   = l.used > 0 ? +((((l.used - l.invalid_count - l.no_answer)) / l.used) * 100).toFixed(1) : 0;
       l.sotong_rate  = l.connected > 0 ? +((l.sotong / l.connected) * 100).toFixed(1) : 0;
       l.convert_rate = l.sotong > 0 ? +((l.positive / l.sotong) * 100).toFixed(1) : 0;
+      // 단일 DB 퀄리티 점수 (0~100): 도달률(데이터 퀄)×0.4 + 소통률(명단 퀄, 핵심)×0.6.
+      // 전환율(상담원/스크립트 성과)은 DB 퀄리티 아니라 제외. 미측정(used=0)이면 null → UI "—".
+      l.quality = +l.used > 0 ? Math.round(l.reach_rate * 0.4 + l.sotong_rate * 0.6) : null;
       const { rows: ag } = await query(`
         SELECT c.assigned_agent as agent_name,
           COUNT(DISTINCT c.id) as distributed,

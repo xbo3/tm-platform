@@ -173,6 +173,7 @@ export default function ManagerView({ user }) {
     { k: 'reject', label: '거절', num: true },
     { k: 'no_answer', label: '부재', num: true },
     { k: 'invalid_count', label: '결번', num: true },
+    { k: 'quality', label: '퀄리티', num: true },
     { k: 'reach_rate', label: '도달률', num: true },
     { k: 'sotong_rate', label: '소통률', num: true },
     { k: 'convert_rate', label: '전환율', num: true },
@@ -217,7 +218,8 @@ export default function ManagerView({ user }) {
     { k: 'reject', label: '거절', align: 'right' },
     { k: 'no_answer', label: '부재', align: 'right' },
     { k: 'invalid_count', label: '결번', align: 'right' },
-    { k: 'uploaded_at', label: '구입일', align: 'right' },
+    { k: 'quality', label: '퀄리티', align: 'right' },
+    { k: 'uploaded_at', label: '등록일', align: 'right' },
   ];
   const cellBtn = (bg, bd, col) => ({ padding: '4px 9px', marginLeft: 4, fontSize: 10, fontWeight: 600, borderRadius: 4, cursor: 'pointer', background: bg, border: `1px solid ${bd}`, color: col, whiteSpace: 'nowrap' });
 
@@ -586,6 +588,11 @@ export default function ManagerView({ user }) {
                       <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-dim)' }}>{l.reject ?? 0}</td>
                       <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-dim)' }}>{l.no_answer ?? 0}</td>
                       <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--neg)' }}>{l.invalid_count ?? 0}</td>
+                      <td className="mono" title="DB 퀄리티 = 도달률×0.4 + 소통률×0.6 (0~100). 미측정=—"
+                        style={{ textAlign: 'right', padding: '5px 6px', fontWeight: 700,
+                          color: l.quality == null ? 'var(--text-faint)' : (l.quality >= 60 ? 'var(--pos)' : l.quality >= 35 ? 'var(--accent)' : 'var(--neg)') }}>
+                        {l.quality == null ? '—' : l.quality}
+                      </td>
                       <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
                         {new Date(l.uploaded_at).toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' })}
                       </td>
