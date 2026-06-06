@@ -509,27 +509,38 @@ export async function runClassificationInternal(call_id) {
     [call_id, final_stt_text, category, confidence, recall_at, JSON.stringify(analysis_meta)]
   );
 
-  // 6) Customer status sync
+  // 6) Customer status sync (상담원 수동 피드 보호 및 교차 검증)
   if (c.customer_id) {
-    if (category === 'positive') {
-      await query(`UPDATE customers SET status='positive', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
-    } else if (category === 'recall') {
-      await query(
-        `UPDATE customers SET status='recall', recall_at=$1, updated_at=NOW() WHERE id=$2`,
-        [recall_at, c.customer_id]
-      );
-    } else if (category === 'invalid') {
-      await query(`UPDATE customers SET status='invalid', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
-    } else if (category === 'dormant') {
-      await query(
-        `UPDATE customers SET status='dormant', dormant_since=NOW(), updated_at=NOW() WHERE id=$1`,
-        [c.customer_id]
-      );
-    } else if (category === 'no_answer') {
-      await query(
-        `UPDATE customers SET no_answer_count = COALESCE(no_answer_count,0)+1, updated_at=NOW() WHERE id=$1`,
-        [c.customer_id]
-      );
+    const callResultCheck = await query(
+      `SELECT result FROM calls WHERE id=$1`,
+      [call_id]
+    );
+    const manualResult = callResultCheck.rows[0]?.result;
+    const isManualFeedDefined = ['positive', 'reject', 'recall', 'invalid', 'done'].includes(manualResult);
+
+    if (!isManualFeedDefined) {
+      if (category === 'positive') {
+        await query(`UPDATE customers SET status='positive', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
+      } else if (category === 'recall') {
+        await query(
+          `UPDATE customers SET status='recall', recall_at=$1, updated_at=NOW() WHERE id=$2`,
+          [recall_at, c.customer_id]
+        );
+      } else if (category === 'invalid') {
+        await query(`UPDATE customers SET status='invalid', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
+      } else if (category === 'dormant') {
+        await query(
+          `UPDATE customers SET status='dormant', dormant_since=NOW(), updated_at=NOW() WHERE id=$1`,
+          [c.customer_id]
+        );
+      } else if (category === 'no_answer') {
+        await query(
+          `UPDATE customers SET no_answer_count = COALESCE(no_answer_count,0)+1, updated_at=NOW() WHERE id=$1`,
+          [c.customer_id]
+        );
+      }
+    } else {
+      console.log(`[classify] Manual result '${manualResult}' wins. Automatic status skip for customer_id=${c.customer_id}`);
     }
   }
 
