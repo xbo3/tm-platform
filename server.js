@@ -17,7 +17,7 @@ import { attachWs } from './server/ws.js';
 // v8 routes
 import distRouter from './server/routes/dist.js';
 import sipRouter from './server/routes/sip.js';
-import classifyRouter from './server/routes/classify.js';
+import classifyRouter, { runClassificationInternal } from './server/routes/classify.js';
 import suppliersRouter from './server/routes/suppliers.js';
 import adminRouter from './server/routes/admin.js';
 
@@ -775,6 +775,11 @@ app.post(
         [callId, rel, req.file.size]
       );
       res.json({ ok: true, recording: rows[0] });
+
+      // 녹음 파일 업로드 직후 백그라운드 자동 피드 기재(분류) 비동기 실행
+      runClassificationInternal(callId).catch(err => {
+        console.error(`[recordings] Auto classification failed for call ${callId}:`, err.message);
+      });
     } catch (e) {
       console.error('[recordings] upload error', e);
       res.status(500).json({ error: e.message });

