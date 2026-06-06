@@ -21,11 +21,13 @@ router.post('/next', auth, async (req, res) => {
     await client.query('BEGIN');
 
     // Tier 1: 내 귀속 부재(retry/no_answer, 임계 미만) 중 이전 업무일(KST 10시 경계)에 찍힌 것부터.
+    // 비활성화된(is_active=false) DB의 이월 건은 분배 대상에서 제외되도록 cl.is_active = true 조건 추가.
     let pick = await client.query(
       `SELECT c.id, c.name, c.phone_number, c.memo, c.status
          FROM customers c
          JOIN customer_lists cl ON cl.id = c.list_id
         WHERE c.assigned_agent = $1
+          AND cl.is_active = true
           AND c.status IN ('retry','no_answer')
           AND c.no_answer_count < COALESCE(cl.no_answer_limit, 3)
           AND (((c.updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)
@@ -198,8 +200,9 @@ router.get('/my-carryover', auth, async (req, res) => {
          FROM customers c
          JOIN customer_lists cl ON cl.id = c.list_id
         WHERE c.assigned_agent=$1 AND c.status IN ('retry','no_answer')
+          AND cl.is_active = true
           AND c.no_answer_count < COALESCE(cl.no_answer_limit, 3)
-        ORDER BY c.id ASC`,
+         ORDER BY c.id ASC`,
       [agent]
     );
     const today_due = rows.filter(r => r.due_now);
