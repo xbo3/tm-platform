@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var ws: WsClient? = null
     private var tracker: CallTracker? = null
     private var recorder: Recorder? = null
+    @Volatile private var activePhoneNumber: String? = null
     private val uploadHttp = OkHttpClient.Builder()
         .callTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -117,7 +118,7 @@ class MainActivity : AppCompatActivity() {
         ws = null
         tracker?.unregister()
         tracker = null
-        try { recorder?.stop()?.delete() } catch (_: Exception) {}
+        try { recorder?.stop(null)?.delete() } catch (_: Exception) {}
         recorder = null
     }
 
@@ -187,7 +188,9 @@ class MainActivity : AppCompatActivity() {
                     emitCallState(ev.callId, "offhook", 0)
                 }
                 is CallTracker.Event.Idle -> {
-                    val file = recorder?.stop()
+                    val phone = activePhoneNumber
+                    activePhoneNumber = null
+                    val file = recorder?.stop(phone)
                     emitCallState(ev.callId, "idle", ev.durationSec)
                     log("idle · duration=${ev.durationSec}s · callId=${ev.callId}")
                     // Best-effort upload, then delete local file. Happens off the main thread.
@@ -317,6 +320,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "CALL_PHONE 권한 없음", Toast.LENGTH_LONG).show()
                 return false
             }
+            activePhoneNumber = phone
             val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phone")).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }

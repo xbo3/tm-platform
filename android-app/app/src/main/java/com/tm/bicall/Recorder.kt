@@ -1,75 +1,99 @@
 package com.tm.bicall
 
 import android.content.Context
-import android.media.MediaRecorder
-import android.os.Build
+import android.os.Environment
 import android.util.Log
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 /**
- * Thin wrapper over MediaRecorder. One call → one file.
- *
- * Source strategy:
- *  - We try MediaRecorder.AudioSource.MIC. Capturing the remote leg would need
- *    VOICE_CALL which is privileged on modern Android; MIC records only the
- *    agent's side but is reliable across OEMs. STT on the remote leg will
- *    need a different capture channel (SIP server-side) in the future.
- *
- * File location: app cacheDir/call_<callId>_<ts>.m4a
- * After the WS upload completes the caller should delete the file.
+ * Grabs the system's native voice call recording from Samsung Galaxy's Call folder.
+ * Instead of direct MediaRecorder MIC capture, this watches /sdcard/Recordings/Call
+ * for the newly generated [phone]_[YYMMDD]_[HHMMSS].m4a file, copies it to app cache
+ * for a safe upload, and leaves the system original intact.
  */
 class Recorder(private val ctx: Context) {
 
-    private var rec: MediaRecorder? = null
-    private var currentFile: File? = null
+    fun start(callId: Any?): Boolean {
+        // No-op for native recording, return true to signify tracker path active
+        Log.i("bicall", "system recording watcher active for callId=$callId")
+        return true
+    }
 
-    fun start(callId: Any?): File? {
-        stopSilent()
-        val file = File(ctx.cacheDir, "call_${callId ?: "x"}_${System.currentTimeMillis()}.m4a")
-        val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx) else @Suppress("DEPRECATION") MediaRecorder()
-        try {
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioSamplingRate(16_000)
-            r.setAudioChannels(1)
-            r.setAudioEncodingBitRate(64_000)
-            r.setOutputFile(file.absolutePath)
-            r.prepare()
-            r.start()
-            rec = r
-            currentFile = file
-            Log.i("bicall", "rec start → ${file.name}")
-            return file
-        } catch (e: Exception) {
-            Log.e("bicall", "rec start failed", e)
-            try { r.release() } catch (_: Exception) {}
-            rec = null
-            currentFile = null
+    /**
+     * Polls the Galaxy call recording folder for the specified phone number,
+     * copies the match to app cache, and returns it.
+     */
+    fun stop(phone: String?): File? {
+        if (phone.isNullOrEmpty()) return null
+        
+        // Clean phone format: strip dash for match, keep dash version as fallback
+        val cleanPhone = phone.replace("[^0-9]".toRegex(), "")
+        val formattedPhone = phone.trim()
+
+        val candidateDirs = listOf(
+            File("/storage/emulated/0/Recordings/Call"),
+            File(Environment.getExternalStorageDirectory(), "Recordings/Call"),
+            File("/sdcard/Recordings/Call")
+        )
+
+        var matchedFile: File? = null
+        val maxAttempts = 6 // 3 seconds total (500ms * 6)
+        
+        Log.i("bicall", "starting system recording folder scan for: $cleanPhone / $formattedPhone")
+
+        for (attempt in 1..maxAttempts) {
+            for (dir in candidateDirs) {
+                if (!dir.exists() || !dir.isDirectory) continue
+                
+                val files = dir.listFiles() ?: continue
+                // Sort by last modified descending
+                val sorted = files.filter { f ->
+                    f.isFile && (f.name.endsWith(".m4a") || f.name.endsWith(".mp3") || f.name.endsWith(".amr"))
+                }.sortedByDescending { it.lastModified() }
+
+                for (f in sorted) {
+                    val name = f.name
+                    val isMatch = name.contains(cleanPhone) || name.contains(formattedPhone) ||
+                                 (cleanPhone.length >= 8 && name.contains(cleanPhone.substring(cleanPhone.length - 8)))
+                    
+                    // File must be modified within the last 15 seconds to prevent grabbing old calls
+                    val ageMs = System.currentTimeMillis() - f.lastModified()
+                    if (isMatch && ageMs < 15000) {
+                        matchedFile = f
+                        break
+                    }
+                }
+                if (matchedFile != null) break
+            }
+            
+            if (matchedFile != null) {
+                Log.i("bicall", "found match: ${matchedFile.name} on attempt $attempt")
+                break
+            }
+            
+            try { Thread.sleep(500) } catch (_: InterruptedException) {}
+        }
+
+        if (matchedFile == null) {
+            Log.w("bicall", "no native call recording found for: $phone")
             return null
         }
-    }
 
-    /** Returns the finalized file (may be null on error). Caller owns deletion. */
-    fun stop(): File? {
-        val r = rec ?: return null
-        val f = currentFile
+        // Copy to app cache to prevent locking/modifying the original system file
         try {
-            r.stop()
+            val dest = File(ctx.cacheDir, "native_call_${System.currentTimeMillis()}_${matchedFile.name}")
+            FileInputStream(matchedFile).use { input ->
+                FileOutputStream(dest).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            Log.i("bicall", "safely copied ${matchedFile.name} -> ${dest.name} (${dest.length()} bytes)")
+            return dest
         } catch (e: Exception) {
-            Log.w("bicall", "rec stop failed (possibly too short)", e)
-        } finally {
-            try { r.release() } catch (_: Exception) {}
-            rec = null
-            currentFile = null
+            Log.e("bicall", "failed to copy system recording file", e)
+            return null
         }
-        return f
-    }
-
-    private fun stopSilent() {
-        try { rec?.stop() } catch (_: Exception) {}
-        try { rec?.release() } catch (_: Exception) {}
-        rec = null
-        currentFile = null
     }
 }
