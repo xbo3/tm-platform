@@ -277,30 +277,44 @@ export default function ManagerView({ user }) {
               </span>
             </div>
 
-            {/* I-2: 현재 연결중인 DB 배너 (배너2) — biplays 6/6 */}
+            {/* I-2: 현재 연결중인 DB 배너 (배너2) — 타이틀 + 판매상 + 실시간 기록 강조 (biplays 6/6) */}
             <div style={{
-              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
-              padding: '8px 12px', borderRadius: 8,
+              marginBottom: 12, padding: '12px 14px', borderRadius: 8,
               background: activeList ? 'rgba(34,197,94,.08)' : 'var(--bg-soft, rgba(255,255,255,.03))',
               border: `1px solid ${activeList ? 'var(--pos)' : 'var(--border-soft)'}`,
             }}>
               {activeList ? (
                 <>
-                  <Led color="var(--pos)" size={9} pulse />
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>연결 중</span>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{activeList.title}</span>
-                  <span className="mono" style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)' }}>
-                    잔여 <strong style={{ color: 'var(--text)' }}>{activeList.remaining}</strong>
-                    <span style={{ color: 'var(--pos)', marginLeft: 8 }}>연결 {activeList.connected ?? 0}</span>
-                    <span style={{ color: 'var(--accent)', marginLeft: 8 }}>소통 {activeList.sotong ?? 0}</span>
-                    <span style={{ color: 'var(--accent)', marginLeft: 8 }}>긍정 {activeList.positive ?? 0}</span>
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 9 }}>
+                    <Led color="var(--pos)" size={10} pulse />
+                    <span style={{ fontSize: 11, color: 'var(--pos)', fontWeight: 700 }}>연결 중</span>
+                    <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--text)' }}>{activeList.title}</span>
+                    {activeList.supplier_tg && (
+                      <span className="mono" style={{ fontSize: 11, color: 'var(--info)' }}>판매상 {activeList.supplier_tg}</span>
+                    )}
+                    <span className="mono" style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-dim)' }}>
+                      잔여 <strong style={{ color: 'var(--accent)', fontSize: 16 }}>{activeList.remaining}</strong>
+                    </span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                    {[
+                      ['연결', activeList.connected ?? 0, 'var(--pos)'],
+                      ['소통', activeList.sotong ?? 0, 'var(--accent)'],
+                      ['긍정', activeList.positive ?? 0, 'var(--accent-strong)'],
+                      ['거절', activeList.reject ?? 0, 'var(--text-dim)'],
+                    ].map(([lab, val, col]) => (
+                      <div key={lab} style={{ textAlign: 'center', padding: '5px 0', background: 'rgba(255,255,255,.03)', borderRadius: 5 }}>
+                        <div style={{ fontSize: 9, color: 'var(--text-faint)', marginBottom: 1 }}>{lab}</div>
+                        <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: col, lineHeight: 1 }}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
                 </>
               ) : (
-                <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Led color="var(--text-faint)" size={9} />
                   <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>연결된 DB 없음 — 아래 목록에서 <strong>선택 → 연결</strong></span>
-                </>
+                </div>
               )}
             </div>
 
@@ -526,6 +540,7 @@ export default function ManagerView({ user }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 600 }}>{l.title}</span>
+                    {l.supplier_tg && <span className="mono" style={{ fontSize: 10, color: 'var(--info)' }}>판매상 {l.supplier_tg}</span>}
                     {l.is_test && <span className="tag warn">TEST</span>}
                     {l.is_active && <span className="tag pos">활성</span>}
                     {l.is_distributed && !l.is_active && <span className="tag info">분배완료</span>}
@@ -562,7 +577,7 @@ export default function ManagerView({ user }) {
 
                 <Bar pct={usedPct} color="var(--accent)" h={4} />
 
-                <div style={{ display: 'flex', gap: 6, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft)', alignItems: 'center', flexWrap: 'wrap' }}>
                   <select value={l.category || ''} onChange={e => updateList(l.id, { category: e.target.value || null })}
                     style={{ fontSize: 11, padding: '5px 8px' }}>
                     {CATEGORY_OPTS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
