@@ -11,6 +11,7 @@ import multer from 'multer';
 import XLSX from 'xlsx';
 
 import { query, initDB } from './server/db.js';
+import pool from './server/db.js';
 import { auth, requireRole, generateToken } from './server/auth.js';
 import { attachWs, isDeviceOnline } from './server/ws.js';
 
@@ -594,42 +595,84 @@ app.get('/api/agent/history', auth, requireRole('agent'), async (req, res) => {
 });
 
 // ── Calls ──
+// 센터장 모델 A — FCFS 공유풀 (biplays 6/03). 연결된 단일 DB(is_active) 의 '안 친(pending)' 번호를
+// 잔여부터 id 순으로 분배. 사전배정(분배) 없음 = 샌드 먼저 누른 상담원이 맨 앞 번호. 동시성=트랜잭션+SKIP LOCKED.
+//  Tier1   : 내 귀속 이전-업무일 부재(retry/no_answer, 임계 미만) 우선 — 활성 DB 한정, 오전10시 경계.
+//  Tier1.5 : 내 recall 예약 도래분 — 활성 DB 한정.
+//  Tier2   : 연결된 단일 DB 의 pending FCFS (assigned_agent 무시).
+// ※ 교체(connect-list)로 is_active 가 바뀌면 즉시 그 DB 잔여부터 분배되고, 비활성 DB의 이월/잔여는
+//   배제됨(쓴 번호는 status≠pending 이라 자동 락/보존). 재교체 시 그 DB의 남은 pending 부터 이어서 분배.
 app.post('/api/calls/next', auth, requireRole('agent'), async (req, res) => {
+  const cid = req.user.center_id;
+  const an = req.user.agent_name;
+  const client = await pool.connect();
   try {
-    const cid = req.user.center_id;
-    const an = req.user.agent_name;
-    // priority: test list first, then recall (recall_at <= now), then pending
-    let { rows } = await query(`
-      SELECT c.id, c.name, c.phone_number, c.memo, c.list_id, cl.is_test
-        FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
-       WHERE c.center_id=$1 AND c.assigned_agent=$2 AND c.status='pending' AND cl.is_test=true
-       ORDER BY c.id LIMIT 1`, [cid, an]);
-    if (!rows.length) {
-      ({ rows } = await query(`
-        SELECT c.id, c.name, c.phone_number, c.memo, c.list_id, cl.is_test
-          FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
-         WHERE c.center_id=$1 AND c.assigned_agent=$2 AND c.status='recall' AND c.recall_at <= NOW()
-         ORDER BY c.recall_at LIMIT 1`, [cid, an]));
-    }
-    if (!rows.length) {
-      ({ rows } = await query(`
-        SELECT c.id, c.name, c.phone_number, c.memo, c.list_id, cl.is_test
-          FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
-         WHERE c.center_id=$1 AND c.assigned_agent=$2 AND c.status='pending'
-         ORDER BY c.id LIMIT 1`, [cid, an]));
-    }
-    if (!rows.length) return res.status(404).json({ error: 'No more customers' });
+    await client.query('BEGIN');
 
-    const c = rows[0];
-    await query(`UPDATE customers SET status='calling', updated_at=NOW() WHERE id=$1`, [c.id]);
+    // Tier 1 — 이전 업무일에 내가 친 부재(나에게 귀속), 활성 DB 한정
+    let pick = await client.query(
+      `SELECT c.id, c.name, c.phone_number, c.memo, c.list_id
+         FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
+        WHERE c.assigned_agent=$1 AND cl.center_id=$2 AND cl.is_active=true
+          AND c.status IN ('retry','no_answer')
+          AND c.no_answer_count < COALESCE(cl.no_answer_limit, 3)
+          AND (((c.updated_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)
+              < (((NOW() AT TIME ZONE 'Asia/Seoul') - INTERVAL '10 hours')::date)
+        ORDER BY c.id ASC LIMIT 1 FOR UPDATE OF c SKIP LOCKED`,
+      [an, cid]
+    );
+
+    // Tier 1.5 — 내 recall 예약 도래분, 활성 DB 한정
+    if (pick.rows.length === 0) {
+      pick = await client.query(
+        `SELECT c.id, c.name, c.phone_number, c.memo, c.list_id
+           FROM customers c JOIN customer_lists cl ON cl.id=c.list_id
+          WHERE c.center_id=$1 AND c.assigned_agent=$2 AND cl.is_active=true
+            AND c.status='recall' AND c.recall_at <= NOW()
+          ORDER BY c.recall_at ASC LIMIT 1 FOR UPDATE OF c SKIP LOCKED`,
+        [cid, an]
+      );
+    }
+
+    // Tier 2 — 연결된 단일 DB 의 pending FCFS (사전배정 무시, 잔여부터 순차)
+    if (pick.rows.length === 0) {
+      pick = await client.query(
+        `SELECT c.id, c.name, c.phone_number, c.memo, c.list_id
+           FROM customers c
+          WHERE c.center_id=$1
+            AND c.list_id = (SELECT id FROM customer_lists
+                              WHERE center_id=$1 AND is_active=true
+                              ORDER BY uploaded_at DESC, id DESC LIMIT 1)
+            AND c.status='pending'
+          ORDER BY c.id ASC LIMIT 1 FOR UPDATE OF c SKIP LOCKED`,
+        [cid]
+      );
+    }
+
+    if (pick.rows.length === 0) {
+      await client.query('COMMIT');
+      return res.status(404).json({ error: 'No more customers' });
+    }
+
+    const c = pick.rows[0];
+    // 잠근 즉시 calling 마킹 + 내게 귀속(이후 부재 carryover/recall 추적용). 다른 상담원 풀에서 자동 제외.
+    await client.query(
+      `UPDATE customers SET status='calling', assigned_agent=$1, updated_at=NOW() WHERE id=$2`,
+      [an, c.id]
+    );
+    await client.query('COMMIT');
 
     const center = await query(`SELECT show_phone FROM centers WHERE id=$1`, [cid]);
-    const showPhone = center.rows[0]?.show_phone;
-    if (!showPhone && c.phone_number) {
+    if (!center.rows[0]?.show_phone && c.phone_number) {
       c.phone_number = c.phone_number.replace(/(\d{3})-(\d{4})-(\d{4})/, '$1-****-$3');
     }
     res.json(c);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch {}
+    res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
 });
 
 app.post('/api/calls/start', auth, requireRole('agent'), async (req, res) => {
