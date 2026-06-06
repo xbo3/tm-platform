@@ -217,13 +217,21 @@ router.get('/center-phones', auth, requireRole('super_admin'), async (req, res) 
       SELECT c.id   AS center_id,
              c.name AS center_name,
              c.is_active AS center_active,
+             c.calling_paused,
+             c.daily_call_limit,
              u.id   AS user_id,
              u.name AS user_name,
              u.agent_name,
              u.phone_id,
-             u.is_active AS user_active
+             u.is_active AS user_active,
+             p.status AS phone_status,
+             (SELECT COUNT(*) FROM calls ca
+                WHERE ca.agent = u.agent_name AND ca.center_id = c.id
+                  AND (ca.started_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Seoul')::date
+                      = (NOW() AT TIME ZONE 'Asia/Seoul')::date)::int AS today_calls
         FROM centers c
         LEFT JOIN users u ON u.center_id = c.id AND u.role = 'agent'
+        LEFT JOIN phones p ON p.id = u.phone_id
        ORDER BY c.id, COALESCE(u.agent_name, ''), u.id`);
 
     const groups = new Map();
@@ -233,17 +241,26 @@ router.get('/center-phones', auth, requireRole('super_admin'), async (req, res) 
           center_id: r.center_id,
           center_name: r.center_name,
           is_active: r.center_active,
+          calling_paused: r.calling_paused,
+          daily_call_limit: r.daily_call_limit || 0,
+          today_calls: 0,
           agents: [],
         });
       }
       if (r.user_id) {
-        groups.get(r.center_id).agents.push({
+        const online = isDeviceOnline(r.phone_id);
+        const g = groups.get(r.center_id);
+        g.today_calls += (r.today_calls || 0);
+        g.agents.push({
           user_id: r.user_id,
           name: r.user_name,
           agent_name: r.agent_name,
           phone_id: r.phone_id,
           is_active: r.user_active,
-          ws_online: isDeviceOnline(r.phone_id),
+          ws_online: online,
+          // 엔진/전화 상태: 오프라인 / 통화중(calling) / 대기(idle)
+          phone_state: !online ? 'offline' : (r.phone_status === 'calling' ? 'calling' : 'idle'),
+          today_calls: r.today_calls || 0,
         });
       }
     }
@@ -251,6 +268,31 @@ router.get('/center-phones', auth, requireRole('super_admin'), async (req, res) 
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// POST /api/admin/center/:id/pause  { paused }  — 콜 발신 STOP/재개 (super_admin)
+// calling_paused=true 면 /calls/next 가 그 센터에 번호 안 내줌. 로그인/데이터는 유지.
+router.post('/center/:id/pause', auth, requireRole('super_admin'), async (req, res) => {
+  try {
+    const paused = !!req.body.paused;
+    const { rowCount } = await query(
+      `UPDATE centers SET calling_paused=$1 WHERE id=$2`, [paused, +req.params.id]
+    );
+    if (rowCount === 0) return res.status(404).json({ error: 'Center not found' });
+    res.json({ ok: true, calling_paused: paused });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/admin/center/:id/call-limit  { limit }  — 일일 콜 임계값 (0=무제한)
+router.post('/center/:id/call-limit', auth, requireRole('super_admin'), async (req, res) => {
+  try {
+    const limit = Math.max(0, parseInt(req.body.limit, 10) || 0);
+    const { rowCount } = await query(
+      `UPDATE centers SET daily_call_limit=$1 WHERE id=$2`, [limit, +req.params.id]
+    );
+    if (rowCount === 0) return res.status(404).json({ error: 'Center not found' });
+    res.json({ ok: true, daily_call_limit: limit });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // GET /api/admin/ai-cost

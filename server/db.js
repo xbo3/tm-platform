@@ -204,6 +204,14 @@ export async function initDB() {
     throw e;
   }
 
+  // 슈퍼어드민 콜 제어 — calling_paused + daily_call_limit (6/06)
+  try {
+    await runMigration('011_center_call_control.sql');
+  } catch (e) {
+    console.error('[migration] 011_center_call_control.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {

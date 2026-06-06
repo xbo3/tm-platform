@@ -608,6 +608,9 @@ app.get('/api/agent/history', auth, requireRole('agent'), async (req, res) => {
 app.post('/api/calls/next', auth, requireRole('agent'), async (req, res) => {
   const cid = req.user.center_id;
   const an = req.user.agent_name;
+  // 슈퍼어드민 콜 STOP: 센터 발신 일시정지면 번호 안 내줌 (오토콜 자연 정지, 데이터/로그인 유지)
+  const pz = await query(`SELECT calling_paused FROM centers WHERE id=$1`, [cid]);
+  if (pz.rows[0]?.calling_paused) return res.status(404).json({ error: '발신 정지됨 (슈퍼어드민)', paused: true });
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

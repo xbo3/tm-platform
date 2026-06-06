@@ -158,6 +158,23 @@ export default function AdminView() {
     }
   };
 
+  // 콜 발신 STOP/재개 (calling_paused). 센터 정지(is_active)와 별개 — 데이터/로그인 유지, 발신만 멈춤.
+  const toggleCallPause = async (center) => {
+    try {
+      await post(`/admin/center/${center.center_id}/pause`, { paused: !center.calling_paused });
+      refreshPhones();
+    } catch (e) { window.alert('실패: ' + e.message); }
+  };
+  // 일일 콜 임계값 설정 (0=무제한)
+  const setCallLimit = async (center) => {
+    const v = window.prompt(`${center.center_name} 일일 콜 임계값 (0=무제한)`, center.daily_call_limit || 0);
+    if (v == null) return;
+    try {
+      await post(`/admin/center/${center.center_id}/call-limit`, { limit: +v || 0 });
+      refreshPhones();
+    } catch (e) { window.alert('실패: ' + e.message); }
+  };
+
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
@@ -201,16 +218,34 @@ export default function AdminView() {
               <div key={c.center_id} style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontWeight: 600 }}>{c.center_name}</span>
-                  {!c.is_active && <span className="tag" style={{ background: 'var(--neg-soft)', color: 'var(--neg)' }}>정지</span>}
+                  {!c.is_active && <span className="tag" style={{ background: 'var(--neg-soft)', color: 'var(--neg)' }}>센터정지</span>}
+                  {c.calling_paused && <span className="tag" style={{ background: 'var(--neg)', color: '#fff' }}>● 콜 STOP</span>}
                   <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>
                     {onlineCount}/{c.agents.length} online
                   </span>
+                  {(() => {
+                    const lim = c.daily_call_limit || 0;
+                    const near = lim > 0 && c.today_calls >= lim * 0.8;
+                    return (
+                      <span onClick={() => setCallLimit(c)} title="클릭 = 일일 콜 임계값 설정"
+                        className="mono" style={{ fontSize: 10, cursor: 'pointer', color: near ? 'var(--neg)' : 'var(--text-dim)', fontWeight: near ? 700 : 400 }}>
+                        오늘 {c.today_calls}콜{lim > 0 ? ` / 임계 ${lim}` : ' / 임계 없음'}{near ? ' ⚠ 임계근접' : ''}
+                      </span>
+                    );
+                  })()}
                   <div style={{ flex: 1 }} />
+                  <button
+                    onClick={() => toggleCallPause(c)}
+                    className="btn"
+                    style={{ fontSize: 10, padding: '3px 12px', fontWeight: 700, border: 'none',
+                      background: c.calling_paused ? 'var(--pos)' : 'var(--neg)', color: '#fff' }}
+                    title={c.calling_paused ? '발신 재개' : '발신 즉시 정지 (오토콜 멈춤)'}
+                  >{c.calling_paused ? '콜 재개' : '콜 STOP'}</button>
                   <button
                     onClick={() => toggleCenterActive(c)}
                     className="btn ghost"
                     style={{ fontSize: 10, padding: '3px 8px' }}
-                  >{c.is_active ? '정지' : '재개'}</button>
+                  >{c.is_active ? '센터정지' : '센터재개'}</button>
                   <button
                     onClick={() => deleteCenter(c)}
                     className="btn ghost danger"
@@ -222,9 +257,12 @@ export default function AdminView() {
                 )}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
                   {c.agents.map(a => {
-                    const color = !a.is_active
-                      ? 'var(--text-faint)'
-                      : a.ws_online ? 'var(--pos)' : 'var(--neg)';
+                    const color = !a.is_active ? 'var(--text-faint)'
+                      : a.phone_state === 'calling' ? 'var(--neg)'
+                      : a.phone_state === 'idle' ? 'var(--pos)' : 'var(--text-faint)';
+                    const stLabel = !a.is_active ? '정지됨'
+                      : a.phone_state === 'calling' ? '통화중'
+                      : a.phone_state === 'idle' ? '대기' : '오프라인';
                     return (
                       <div key={a.user_id} style={{
                         display: 'flex', alignItems: 'center', gap: 8,
@@ -233,11 +271,13 @@ export default function AdminView() {
                         border: '1px solid var(--border-soft)',
                         borderRadius: 6,
                       }}>
-                        <Led color={color} size={7} pulse={a.is_active && a.ws_online} />
-                        <span className="mono" style={{ fontSize: 11, fontWeight: 600, width: 36 }}>{a.agent_name || '?'}</span>
-                        <span style={{ flex: 1, fontSize: 11, color: a.is_active ? 'var(--text)' : 'var(--text-faint)' }}>
+                        <Led color={color} size={7} pulse={a.is_active && a.phone_state === 'calling'} />
+                        <span className="mono" style={{ fontSize: 11, fontWeight: 600, width: 28 }}>{a.agent_name || '?'}</span>
+                        <span style={{ flex: 1, fontSize: 11, color: a.is_active ? 'var(--text)' : 'var(--text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {a.name || '(이름 없음)'}
                         </span>
+                        <span style={{ fontSize: 9, fontWeight: 600, color }}>{stLabel}</span>
+                        <span className="mono" style={{ fontSize: 9, color: 'var(--text-dim)' }} title="오늘 콜수">{a.today_calls ?? 0}콜</span>
                         <button
                           onClick={() => toggleAgentActive(a)}
                           className="btn ghost"
