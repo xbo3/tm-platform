@@ -163,6 +163,7 @@ export default function ManagerView({ user }) {
   const SORT_FIELDS = [
     { k: 'uploaded_at', label: '업로드일', num: false },
     { k: 'title', label: '타이틀', num: false },
+    { k: 'supplier_tg', label: '판매자', num: false },
     { k: 'total', label: '전체', num: true },
     { k: 'used', label: '사용', num: true },
     { k: 'remaining', label: '잔여', num: true },
@@ -199,6 +200,26 @@ export default function ManagerView({ user }) {
     if (d === 0) return null;
     return { sign: d > 0 ? '+' : '', val: d, pct: y > 0 ? Math.round((d / y) * 100) : null };
   };
+
+  // 표 헤더 클릭 정렬 (같은 컬럼 다시 누르면 오름/내림 토글)
+  const sortBy = (k) => {
+    if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(k); setSortDir('desc'); }
+  };
+  // DB 목록 = 가로 한 줄 표 (biplays 6/6). 헤더 클릭 = 정렬.
+  const DBCOLS = [
+    { k: 'title', label: '타이틀', align: 'left' },
+    { k: 'supplier_tg', label: '판매자', align: 'left' },
+    { k: 'used', label: '사용', align: 'right' },
+    { k: 'remaining', label: '잔여', align: 'right' },
+    { k: 'connected', label: '연결', align: 'right' },
+    { k: 'sotong', label: '소통', align: 'right' },
+    { k: 'reject', label: '거절', align: 'right' },
+    { k: 'no_answer', label: '부재', align: 'right' },
+    { k: 'invalid_count', label: '결번', align: 'right' },
+    { k: 'uploaded_at', label: '구입일', align: 'right' },
+  ];
+  const cellBtn = (bg, bd, col) => ({ padding: '4px 9px', marginLeft: 4, fontSize: 10, fontWeight: 600, borderRadius: 4, cursor: 'pointer', background: bg, border: `1px solid ${bd}`, color: col, whiteSpace: 'nowrap' });
 
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -460,26 +481,14 @@ export default function ManagerView({ user }) {
             </div>
           </div>
 
-          {/* I-3: 검색 + 전 컬럼 오름/내림 정렬 — biplays 6/6 */}
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+          {/* I-3: 검색 (정렬은 아래 표 헤더 클릭) — biplays 6/6 */}
+          <div style={{ marginBottom: 10 }}>
             <input
-              placeholder="🔍 타이틀·공급자 검색"
+              placeholder="🔍 타이틀·판매자 검색  ·  정렬은 표 헤더 클릭"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              style={{ flex: 1, minWidth: 140, fontSize: 11, padding: '6px 10px' }}
+              style={{ width: '100%', fontSize: 11, padding: '7px 10px', boxSizing: 'border-box' }}
             />
-            <select value={sortKey} onChange={e => setSortKey(e.target.value)} style={{ fontSize: 11, padding: '6px 8px' }}>
-              {SORT_FIELDS.map(f => <option key={f.k} value={f.k}>{f.label}</option>)}
-            </select>
-            <button
-              onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
-              title={sortDir === 'asc' ? '오름차순 (작은→큰)' : '내림차순 (큰→작은)'}
-              style={{
-                padding: '6px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                background: 'transparent', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)',
-              }}>
-              {sortDir === 'asc' ? '오름 ↑' : '내림 ↓'}
-            </button>
           </div>
 
           {uploadResult && (
@@ -533,158 +542,76 @@ export default function ManagerView({ user }) {
           {lists.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-dim)' }}>DB 없음</div>}
           {lists.length > 0 && sortedLists.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-dim)' }}>검색 결과 없음</div>}
 
-          {sortedLists.map(l => {
-            const usedPct = l.total > 0 ? ((+l.total - +l.remaining) / +l.total) * 100 : 0;
-            return (
-              <div key={l.id} className="card elev" style={{ marginBottom: 8, padding: 12 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{l.title}</span>
-                    {l.supplier_tg && <span className="mono" style={{ fontSize: 10, color: 'var(--info)' }}>판매상 {l.supplier_tg}</span>}
-                    {l.is_test && <span className="tag warn">TEST</span>}
-                    {l.is_active && <span className="tag pos">활성</span>}
-                    {l.is_distributed && !l.is_active && <span className="tag info">분배완료</span>}
-                  </div>
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--text-faint)' }}>
-                    {new Date(l.uploaded_at).toLocaleDateString('ko-KR')}
-                  </span>
-                </div>
-
-                <div style={{ display: 'flex', gap: 12, fontSize: 11, marginBottom: 6 }}>
-                  <span>전체 <strong className="mono">{l.total}</strong></span>
-                  <span style={{ color: 'var(--info)' }}>사용 <strong className="mono">{l.used}</strong></span>
-                  <span style={{ color: +l.remaining < 30 ? 'var(--neg)' : 'var(--text)' }}>
-                    잔여 <strong className="mono">{l.remaining}</strong>
-                  </span>
-                </div>
-
-                {/* DB 체크 5종(연결·부재·거절·결번·소통) + 긍정 — 정확 집계 (biplays 6/6) */}
-                <div style={{ display: 'flex', gap: 10, fontSize: 11, marginBottom: 4, flexWrap: 'wrap' }}>
-                  <span style={{ color: 'var(--pos)' }}>연결 <strong className="mono">{l.connected ?? 0}</strong></span>
-                  <span style={{ color: 'var(--accent)' }}>소통 <strong className="mono">{l.sotong ?? 0}</strong></span>
-                  <span style={{ color: 'var(--accent)' }}>긍정 <strong className="mono">{l.positive ?? 0}</strong></span>
-                  <span style={{ color: 'var(--text-dim)' }}>거절 <strong className="mono">{l.reject ?? 0}</strong></span>
-                  <span style={{ color: 'var(--text-dim)' }}>부재 <strong className="mono">{l.no_answer ?? 0}</strong></span>
-                  <span style={{ color: 'var(--neg)' }}>결번 <strong className="mono">{l.invalid_count ?? 0}</strong></span>
-                </div>
-                {/* DB퀄리티 3축: 도달률(데이터)·소통률(명단)·전환율(상담원) */}
-                <div style={{ display: 'flex', gap: 12, fontSize: 10, color: 'var(--text-faint)', marginBottom: 6, flexWrap: 'wrap' }}>
-                  <span>도달률 <strong>{l.reach_rate ?? 0}%</strong></span>
-                  <span>소통률 <strong>{l.sotong_rate ?? 0}%</strong></span>
-                  <span>전환율 <strong>{l.convert_rate ?? 0}%</strong></span>
-                  <span>연결률 {l.connect_rate ?? 0}%</span>
-                </div>
-
-                <Bar pct={usedPct} color="var(--accent)" h={4} />
-
-                <div style={{ display: 'flex', gap: 8, marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-soft)', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <select value={l.category || ''} onChange={e => updateList(l.id, { category: e.target.value || null })}
-                    style={{ fontSize: 11, padding: '5px 8px' }}>
-                    {CATEGORY_OPTS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
-                  </select>
-
-                  <input
-                    placeholder="@공급자"
-                    value={l.supplier_tg || ''}
-                    onChange={e => updateList(l.id, { supplier_tg: e.target.value })}
-                    onBlur={e => updateList(l.id, { supplier_tg: e.target.value })}
-                    className="mono"
-                    style={{ fontSize: 11, padding: '5px 8px', width: 120, color: 'var(--info)' }}
-                  />
-
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-dim)', cursor: 'pointer' }}>
-                    <input type="checkbox" checked={!!l.auto_connect} onChange={e => updateList(l.id, { auto_connect: e.target.checked })} />
-                    오토연결
-                  </label>
-
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-                    {/* [회수] — 안 친 번호 풀로 복귀 (콜 친 번호 보존) */}
-                    <button
-                      onClick={() => recallList(l)}
-                      title="안 친 번호 회수 (재분배 풀로 복귀, 콜 친 번호는 보존)"
-                      style={{
-                        padding: '6px 10px', fontSize: 11, fontWeight: 500,
-                        background: 'transparent',
-                        border: '1px solid var(--border)',
-                        borderRadius: 5,
-                        color: 'var(--text-dim)',
-                        cursor: 'pointer',
-                      }}>
-                      회수
-                    </button>
-
-                    {/* I-1: "1선택 → 2연결" 2단계 (분배 폐기, biplays 6/6). 연결중이면 정지. */}
-                    {l.is_active ? (
-                      <>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, color: 'var(--pos)' }}>
-                          <Led color="var(--pos)" size={8} pulse /> 연결 중
-                        </span>
-                        <button
-                          onClick={() => toggleActive(l)}
-                          title="연결 정지 (is_active off, 진행 기록은 보존)"
-                          style={{
-                            padding: '6px 10px', fontSize: 11, fontWeight: 500,
-                            background: 'transparent', border: '1px solid var(--border)', borderRadius: 5,
-                            color: 'var(--text-dim)', cursor: 'pointer',
-                          }}>
-                          정지
-                        </button>
-                      </>
-                    ) : selectedListId === l.id ? (
-                      <>
-                        <button
-                          onClick={() => handleDbAction(l)}
-                          disabled={connecting}
-                          title="이 DB 를 연결 — 그 DB만 배타적 활성, 나머지는 자동 정지"
-                          style={{
-                            padding: '6px 16px', fontSize: 11, fontWeight: 700,
-                            background: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 5,
-                            color: '#fff', cursor: 'pointer',
-                          }}>
-                          {connecting ? '연결중…' : '② 연결 ▶'}
-                        </button>
-                        <button
-                          onClick={() => setSelectedListId(null)}
-                          title="선택 취소"
-                          style={{
-                            padding: '6px 8px', fontSize: 11,
-                            background: 'transparent', border: '1px solid var(--border)', borderRadius: 5,
-                            color: 'var(--text-faint)', cursor: 'pointer',
-                          }}>
-                          취소
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        onClick={() => handleDbAction(l)}
-                        title="① 이 DB 선택 (한 번 더 누르면 연결)"
-                        style={{
-                          padding: '6px 14px', fontSize: 11, fontWeight: 600,
-                          background: 'transparent', border: '1px solid var(--accent)', borderRadius: 5,
-                          color: 'var(--accent)', cursor: 'pointer',
-                        }}>
-                        ① 선택
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {l.agents?.length > 0 && (
-                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border-soft)' }}>
-                    {l.agents.map(a => (
-                      <div key={a.agent_name} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, fontSize: 10 }}>
-                        <span className="mono" style={{ width: 18, color: 'var(--info)' }}>{a.agent_name}</span>
-                        <div style={{ flex: 1 }}>
-                          <Bar pct={a.distributed > 0 ? ((a.distributed - a.remaining) / a.distributed) * 100 : 0} color="var(--info)" h={3} />
-                        </div>
-                        <span className="mono" style={{ width: 60, textAlign: 'right', color: 'var(--text-dim)' }}>{a.remaining}/{a.distributed}</span>
-                      </div>
+          {/* DB 목록 = 가로 한 줄 표 (biplays 6/6). 헤더 클릭 = 정렬. */}
+          {sortedLists.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr style={{ color: 'var(--text-faint)', fontSize: 10 }}>
+                    {DBCOLS.map(c => (
+                      <th key={c.k} onClick={() => sortBy(c.k)} title="클릭 = 정렬"
+                        style={{ textAlign: c.align, padding: '4px 6px', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}>
+                        {c.label}{sortKey === c.k ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+                      </th>
                     ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                    <th style={{ textAlign: 'right', padding: '4px 6px' }}>동작</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedLists.map(l => (
+                    <tr key={l.id} style={{ borderTop: '1px solid var(--border-soft)', background: l.is_active ? 'rgba(34,197,94,.07)' : 'transparent' }}>
+                      {/* 타이틀 (+ 카테고리 소형 select) */}
+                      <td style={{ padding: '5px 6px', whiteSpace: 'nowrap' }}>
+                        {l.is_active && <Led color="var(--pos)" size={7} pulse />}
+                        <span style={{ fontWeight: 600, marginLeft: l.is_active ? 5 : 0 }}>{l.title}</span>
+                        {l.is_test && <span className="tag warn" style={{ marginLeft: 4 }}>T</span>}
+                        <select value={l.category || ''} onChange={e => updateList(l.id, { category: e.target.value || null })}
+                          title="카테고리"
+                          style={{ marginLeft: 6, fontSize: 10, padding: '1px 2px', background: 'transparent', border: '1px solid var(--border-soft)', borderRadius: 3, color: 'var(--text-dim)' }}>
+                          {CATEGORY_OPTS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                        </select>
+                      </td>
+                      {/* 판매자 — 인라인 편집 */}
+                      <td style={{ padding: '4px 6px' }}>
+                        <input value={l.supplier_tg || ''} placeholder="@판매자"
+                          onChange={e => updateList(l.id, { supplier_tg: e.target.value })}
+                          onBlur={e => updateList(l.id, { supplier_tg: e.target.value })}
+                          className="mono"
+                          style={{ width: 82, fontSize: 10, padding: '3px 5px', color: 'var(--info)', background: 'transparent', border: '1px solid var(--border-soft)', borderRadius: 4 }} />
+                      </td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--info)' }}>{l.used}</td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: +l.remaining < 30 ? 'var(--neg)' : 'var(--text)', fontWeight: 600 }}>{l.remaining}</td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--pos)' }}>{l.connected ?? 0}</td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--accent)' }}>{l.sotong ?? 0}</td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-dim)' }}>{l.reject ?? 0}</td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-dim)' }}>{l.no_answer ?? 0}</td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--neg)' }}>{l.invalid_count ?? 0}</td>
+                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
+                        {new Date(l.uploaded_at).toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' })}
+                      </td>
+                      {/* 동작 — 오토 + 선택/연결(교체) + 회수 */}
+                      <td style={{ textAlign: 'right', padding: '4px 6px', whiteSpace: 'nowrap' }}>
+                        <label title="오토연결 (자동 다음 DB)" style={{ marginRight: 6, fontSize: 9, color: 'var(--text-faint)', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={!!l.auto_connect} onChange={e => updateList(l.id, { auto_connect: e.target.checked })} style={{ verticalAlign: 'middle', marginRight: 2 }} />오토
+                        </label>
+                        {l.is_active ? (
+                          <button onClick={() => toggleActive(l)} title="연결 정지 (기록 보존)" style={cellBtn('var(--pos)', 'var(--pos)', '#fff')}>● 연결중·정지</button>
+                        ) : selectedListId === l.id ? (
+                          <>
+                            <button onClick={() => handleDbAction(l)} disabled={connecting} title="연결 (배타적 활성, 현재 연결DB와 교체)" style={cellBtn('var(--accent)', 'var(--accent)', '#fff')}>{connecting ? '연결중…' : '② 연결'}</button>
+                            <button onClick={() => setSelectedListId(null)} title="취소" style={cellBtn('transparent', 'var(--border)', 'var(--text-faint)')}>취소</button>
+                          </>
+                        ) : (
+                          <button onClick={() => handleDbAction(l)} title="① 선택 (한 번 더 = 연결)" style={cellBtn('transparent', 'var(--accent)', 'var(--accent)')}>① 선택</button>
+                        )}
+                        <button onClick={() => recallList(l)} title="안 친 번호 회수" style={cellBtn('transparent', 'var(--border)', 'var(--text-dim)')}>회수</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
