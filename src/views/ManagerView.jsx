@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { get, post, patch, uploadFile } from '../api.js';
 import { Led, Bar, Stat, fmtTime, gradeFromRate } from '../components/widgets.jsx';
-import DistributeModal from '../components/DistributeModal.jsx';
 
 const CATEGORY_OPTS = [
   { v: '', label: '미분류' },
@@ -15,10 +14,16 @@ export default function ManagerView({ user }) {
   const [data, setData] = useState(null);
   const [lists, setLists] = useState([]);
   const [queue, setQueue] = useState([]);
-  const [distList, setDistList] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [smsUnread, setSmsUnread] = useState(0);
+  // I-1: DB "1선택 → 2연결" 2단계. 선택된 DB id 보관 (한 번 누르면 선택, 그 DB 다시 누르면 연결)
+  const [selectedListId, setSelectedListId] = useState(null);
+  const [connecting, setConnecting] = useState(false);
+  // I-3: DB 목록 검색 + 전 컬럼 오름/내림 정렬
+  const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState('uploaded_at');
+  const [sortDir, setSortDir] = useState('desc');
   const fileRef = useRef();
 
   const refresh = async () => {
@@ -86,6 +91,26 @@ export default function ManagerView({ user }) {
 
   const toggleActive = (l) => updateList(l.id, { is_active: !l.is_active });
 
+  // I-1: "1선택 → 2연결". 선택된 DB 를 한 번 더 누르면 배타적 연결(POST /admin/connect-list).
+  // 그 DB 만 is_active=true, 센터의 나머지는 모두 비활성(기록 보존). 분배 개념 폐기.
+  const handleDbAction = async (l) => {
+    if (l.is_active) return;                       // 이미 연결중이면 무시(정지는 별도 버튼)
+    if (selectedListId !== l.id) {                 // 1단계: 선택
+      setSelectedListId(l.id);
+      return;
+    }
+    // 2단계: 연결
+    setConnecting(true);
+    try {
+      await post('/admin/connect-list', { list_id: l.id });
+      setSelectedListId(null);
+      await refresh();
+    } catch (e) {
+      window.alert('연결 실패: ' + e.message);
+    }
+    setConnecting(false);
+  };
+
   const recallList = async (l) => {
     // 콜 친 번호는 회수 대상 아님 (status≠pending), 안 친 번호만 풀로 복귀
     const ok = window.confirm(
@@ -130,6 +155,43 @@ export default function ManagerView({ user }) {
   const overallRate = totals.calls > 0 ? +((totals.connected / totals.calls) * 100).toFixed(1) : 0;
   const todayRate = totals.today_calls > 0 ? +((totals.today_connected / totals.today_calls) * 100).toFixed(1) : 0;
   const totalRemaining = lists.reduce((s, l) => s + +l.remaining, 0);
+
+  // I-2: 현재 연결중(배타적 활성)인 DB — 대시보드 상단 배너2 에 표시
+  const activeList = lists.find(l => l.is_active) || null;
+
+  // I-3: DB 목록 필드 정의 + 검색/정렬. SORT_FIELDS = 정렬 가능한 모든 컬럼.
+  const SORT_FIELDS = [
+    { k: 'uploaded_at', label: '업로드일', num: false },
+    { k: 'title', label: '타이틀', num: false },
+    { k: 'total', label: '전체', num: true },
+    { k: 'used', label: '사용', num: true },
+    { k: 'remaining', label: '잔여', num: true },
+    { k: 'connected', label: '연결', num: true },
+    { k: 'sotong', label: '소통', num: true },
+    { k: 'positive', label: '긍정', num: true },
+    { k: 'reject', label: '거절', num: true },
+    { k: 'no_answer', label: '부재', num: true },
+    { k: 'invalid_count', label: '결번', num: true },
+    { k: 'reach_rate', label: '도달률', num: true },
+    { k: 'sotong_rate', label: '소통률', num: true },
+    { k: 'convert_rate', label: '전환율', num: true },
+  ];
+  const sortedLists = (() => {
+    const q = search.trim().toLowerCase();
+    const filtered = q
+      ? lists.filter(l =>
+          (l.title || '').toLowerCase().includes(q) ||
+          (l.supplier_tg || '').toLowerCase().includes(q))
+      : lists;
+    const field = SORT_FIELDS.find(f => f.k === sortKey) || SORT_FIELDS[0];
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      let av = a[field.k], bv = b[field.k];
+      if (field.num) { av = +av || 0; bv = +bv || 0; return (av - bv) * dir; }
+      if (field.k === 'uploaded_at') { av = new Date(av).getTime() || 0; bv = new Date(bv).getTime() || 0; return (av - bv) * dir; }
+      return String(av || '').localeCompare(String(bv || ''), 'ko') * dir;
+    });
+  })();
 
   const delta = (today, y) => {
     if (!y) return null;
@@ -214,6 +276,34 @@ export default function ManagerView({ user }) {
                 총 {lists.reduce((s, l) => s + +l.total, 0).toLocaleString()}건 · 잔여 {totalRemaining.toLocaleString()}건
               </span>
             </div>
+
+            {/* I-2: 현재 연결중인 DB 배너 (배너2) — biplays 6/6 */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
+              padding: '8px 12px', borderRadius: 8,
+              background: activeList ? 'rgba(34,197,94,.08)' : 'var(--bg-soft, rgba(255,255,255,.03))',
+              border: `1px solid ${activeList ? 'var(--pos)' : 'var(--border-soft)'}`,
+            }}>
+              {activeList ? (
+                <>
+                  <Led color="var(--pos)" size={9} pulse />
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>연결 중</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{activeList.title}</span>
+                  <span className="mono" style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-dim)' }}>
+                    잔여 <strong style={{ color: 'var(--text)' }}>{activeList.remaining}</strong>
+                    <span style={{ color: 'var(--pos)', marginLeft: 8 }}>연결 {activeList.connected ?? 0}</span>
+                    <span style={{ color: 'var(--accent)', marginLeft: 8 }}>소통 {activeList.sotong ?? 0}</span>
+                    <span style={{ color: 'var(--accent)', marginLeft: 8 }}>긍정 {activeList.positive ?? 0}</span>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Led color="var(--text-faint)" size={9} />
+                  <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>연결된 DB 없음 — 아래 목록에서 <strong>선택 → 연결</strong></span>
+                </>
+              )}
+            </div>
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>활성 DB</div>
@@ -347,13 +437,35 @@ export default function ManagerView({ user }) {
         {/* RIGHT — DB 목록 */}
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>DB 목록 ({lists.length})</span>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>DB 목록 ({sortedLists.length}{search ? `/${lists.length}` : ''})</span>
             <div style={{ display: 'flex', gap: 6 }}>
               <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleUpload} style={{ display: 'none' }} />
               <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
                 {uploading ? '업로드중…' : '+ DB 업로드'}
               </button>
             </div>
+          </div>
+
+          {/* I-3: 검색 + 전 컬럼 오름/내림 정렬 — biplays 6/6 */}
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+            <input
+              placeholder="🔍 타이틀·공급자 검색"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ flex: 1, minWidth: 140, fontSize: 11, padding: '6px 10px' }}
+            />
+            <select value={sortKey} onChange={e => setSortKey(e.target.value)} style={{ fontSize: 11, padding: '6px 8px' }}>
+              {SORT_FIELDS.map(f => <option key={f.k} value={f.k}>{f.label}</option>)}
+            </select>
+            <button
+              onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+              title={sortDir === 'asc' ? '오름차순 (작은→큰)' : '내림차순 (큰→작은)'}
+              style={{
+                padding: '6px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                background: 'transparent', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-dim)',
+              }}>
+              {sortDir === 'asc' ? '오름 ↑' : '내림 ↓'}
+            </button>
           </div>
 
           {uploadResult && (
@@ -405,8 +517,9 @@ export default function ManagerView({ user }) {
           )}
 
           {lists.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-dim)' }}>DB 없음</div>}
+          {lists.length > 0 && sortedLists.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-dim)' }}>검색 결과 없음</div>}
 
-          {lists.map(l => {
+          {sortedLists.map(l => {
             const usedPct = l.total > 0 ? ((+l.total - +l.remaining) / +l.total) * 100 : 0;
             return (
               <div key={l.id} className="card elev" style={{ marginBottom: 8, padding: 12 }}>
@@ -469,7 +582,7 @@ export default function ManagerView({ user }) {
                     오토연결
                   </label>
 
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
                     {/* [회수] — 안 친 번호 풀로 복귀 (콜 친 번호 보존) */}
                     <button
                       onClick={() => recallList(l)}
@@ -484,23 +597,60 @@ export default function ManagerView({ user }) {
                       }}>
                       회수
                     </button>
-                    {/* [연결] / [소진] 토글 — 시안 6-bis */}
-                    <button
-                      onClick={() => toggleActive(l)}
-                      title={l.is_active ? '활성 → 비활성 (소진/정지)' : '비활성 → 활성 (NEXT CALL 큐에 포함)'}
-                      style={{
-                        padding: '6px 12px', fontSize: 11, fontWeight: 600,
-                        background: l.is_active ? 'var(--pos)' : 'transparent',
-                        border: `1px solid ${l.is_active ? 'var(--pos)' : 'var(--border)'}`,
-                        borderRadius: 5,
-                        color: l.is_active ? '#fff' : 'var(--text-dim)',
-                        cursor: 'pointer',
-                      }}>
-                      {l.is_active ? '연결됨' : '소진'}
-                    </button>
-                    <button className="btn primary" onClick={() => setDistList(l)}>
-                      분배
-                    </button>
+
+                    {/* I-1: "1선택 → 2연결" 2단계 (분배 폐기, biplays 6/6). 연결중이면 정지. */}
+                    {l.is_active ? (
+                      <>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, color: 'var(--pos)' }}>
+                          <Led color="var(--pos)" size={8} pulse /> 연결 중
+                        </span>
+                        <button
+                          onClick={() => toggleActive(l)}
+                          title="연결 정지 (is_active off, 진행 기록은 보존)"
+                          style={{
+                            padding: '6px 10px', fontSize: 11, fontWeight: 500,
+                            background: 'transparent', border: '1px solid var(--border)', borderRadius: 5,
+                            color: 'var(--text-dim)', cursor: 'pointer',
+                          }}>
+                          정지
+                        </button>
+                      </>
+                    ) : selectedListId === l.id ? (
+                      <>
+                        <button
+                          onClick={() => handleDbAction(l)}
+                          disabled={connecting}
+                          title="이 DB 를 연결 — 그 DB만 배타적 활성, 나머지는 자동 정지"
+                          style={{
+                            padding: '6px 16px', fontSize: 11, fontWeight: 700,
+                            background: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 5,
+                            color: '#fff', cursor: 'pointer',
+                          }}>
+                          {connecting ? '연결중…' : '② 연결 ▶'}
+                        </button>
+                        <button
+                          onClick={() => setSelectedListId(null)}
+                          title="선택 취소"
+                          style={{
+                            padding: '6px 8px', fontSize: 11,
+                            background: 'transparent', border: '1px solid var(--border)', borderRadius: 5,
+                            color: 'var(--text-faint)', cursor: 'pointer',
+                          }}>
+                          취소
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => handleDbAction(l)}
+                        title="① 이 DB 선택 (한 번 더 누르면 연결)"
+                        style={{
+                          padding: '6px 14px', fontSize: 11, fontWeight: 600,
+                          background: 'transparent', border: '1px solid var(--accent)', borderRadius: 5,
+                          color: 'var(--accent)', cursor: 'pointer',
+                        }}>
+                        ① 선택
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -530,8 +680,6 @@ export default function ManagerView({ user }) {
         <Stat label="오늘 통화시간" value={fmtTime(totals.talk)} color="var(--info)" />
         <Stat label="긍정 누적" value={totals.positive} color="var(--accent)" />
       </div>
-
-      <DistributeModal list={distList} onClose={() => setDistList(null)} onDone={refresh} />
     </div>
   );
 }
