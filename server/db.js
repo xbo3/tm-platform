@@ -196,6 +196,14 @@ export async function initDB() {
     throw e;
   }
 
+  // distribution_events.triggered_by 제약 확장 — connect/recall 허용 (DB 교체/회수 500 수정, 6/06)
+  try {
+    await runMigration('010_dist_events_trigger.sql');
+  } catch (e) {
+    console.error('[migration] 010_dist_events_trigger.sql failed:', e.message);
+    throw e;
+  }
+
   // Seed: super admin + demo center + 5 agents (only on fresh DB)
   const { rows } = await query(`SELECT id FROM users WHERE role='super_admin' LIMIT 1`);
   if (rows.length === 0) {
