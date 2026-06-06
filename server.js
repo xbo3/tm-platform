@@ -20,6 +20,9 @@ import sipRouter from './server/routes/sip.js';
 import classifyRouter, { runClassificationInternal } from './server/routes/classify.js';
 import suppliersRouter from './server/routes/suppliers.js';
 import adminRouter from './server/routes/admin.js';
+import centersRouter from './server/routes/centers.js';
+import customersRouter from './server/routes/customers.js';
+import messagesRouter from './server/routes/messages.js';
 
 import { startCron, stopCron } from './server/jobs.js';
 
@@ -938,6 +941,12 @@ app.use('/api/sip', sipRouter);
 app.use('/api/classify', classifyRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/admin', adminRouter);
+// 머지 과정에서 마운트 누락됐던 모듈 라우터 복구 (2026-06-06 서비스 냉정점검).
+// 인라인 라우트가 먼저 등록돼 있어 겹치는 정확 경로(GET /api/centers, PUT /api/centers/:id,
+// POST /api/customers/distribute)는 인라인이 우선, 라우터는 누락 엔드포인트만 보충한다.
+app.use('/api/centers', centersRouter);      // 센터 생성/정지/삭제 + 상담원 추가/정지 (AdminView)
+app.use('/api/customers', customersRouter);  // 상담원 할당번호 목록 GET /api/customers (AgentView)
+app.use('/api', messagesRouter);             // 양방향 SMS + /api/messages/summary (Manager/AgentView)
 
 // ── Static (SPA) ──
 app.use(express.static(join(__dirname, 'dist')));
