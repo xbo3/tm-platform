@@ -428,7 +428,23 @@ export default function ManagerView({ user }) {
                   <span style={{ color: +l.remaining < 30 ? 'var(--neg)' : 'var(--text)' }}>
                     잔여 <strong className="mono">{l.remaining}</strong>
                   </span>
-                  <span style={{ color: 'var(--pos)' }}>연결률 <strong className="mono">{l.connect_rate}%</strong></span>
+                </div>
+
+                {/* DB 체크 5종(연결·부재·거절·결번·소통) + 긍정 — 정확 집계 (biplays 6/6) */}
+                <div style={{ display: 'flex', gap: 10, fontSize: 11, marginBottom: 4, flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--pos)' }}>연결 <strong className="mono">{l.connected ?? 0}</strong></span>
+                  <span style={{ color: 'var(--accent)' }}>소통 <strong className="mono">{l.sotong ?? 0}</strong></span>
+                  <span style={{ color: 'var(--accent)' }}>긍정 <strong className="mono">{l.positive ?? 0}</strong></span>
+                  <span style={{ color: 'var(--text-dim)' }}>거절 <strong className="mono">{l.reject ?? 0}</strong></span>
+                  <span style={{ color: 'var(--text-dim)' }}>부재 <strong className="mono">{l.no_answer ?? 0}</strong></span>
+                  <span style={{ color: 'var(--neg)' }}>결번 <strong className="mono">{l.invalid_count ?? 0}</strong></span>
+                </div>
+                {/* DB퀄리티 3축: 도달률(데이터)·소통률(명단)·전환율(상담원) */}
+                <div style={{ display: 'flex', gap: 12, fontSize: 10, color: 'var(--text-faint)', marginBottom: 6, flexWrap: 'wrap' }}>
+                  <span>도달률 <strong>{l.reach_rate ?? 0}%</strong></span>
+                  <span>소통률 <strong>{l.sotong_rate ?? 0}%</strong></span>
+                  <span>전환율 <strong>{l.convert_rate ?? 0}%</strong></span>
+                  <span>연결률 {l.connect_rate ?? 0}%</span>
                 </div>
 
                 <Bar pct={usedPct} color="var(--accent)" h={4} />

@@ -535,6 +535,9 @@ export async function runClassificationInternal(call_id) {
       );
     } else if (category === 'invalid') {
       await query(`UPDATE customers SET status='invalid', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
+    } else if (category === 'reject') {
+      // 거절 — 이전엔 이 분기가 없어 status 에 안 박혀 디비목록 거절 집계가 0 이던 버그 수정 (biplays 6/6)
+      await query(`UPDATE customers SET status='reject', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
     } else if (category === 'dormant') {
       await query(
         `UPDATE customers SET status='dormant', dormant_since=NOW(), updated_at=NOW() WHERE id=$1`,

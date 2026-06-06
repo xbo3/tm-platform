@@ -272,18 +272,30 @@ app.get('/api/dashboard/:cid', auth, requireRole('center_admin', 'super_admin'),
 app.get('/api/lists/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
   try {
     const cid = +req.params.cid;
+    // DB 체크 5종(연결/부재/거절/결번/소통) 정확 집계 (biplays 6/6). 소통 = 통화 duration 90초+ (객관).
     const { rows: lists } = await query(`
       SELECT cl.*,
+        cl.is_active AS connected_db,
         (SELECT COUNT(*) FROM customers WHERE list_id=cl.id) as total,
-        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status NOT IN ('pending','retry')) as used,
-        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status IN ('done','positive')) as connected,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status<>'pending') as used,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='pending') as remaining,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='positive') as positive,
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='reject') as reject,
         (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status IN ('invalid','invalid_pre')) as invalid_count,
-        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status='pending') as remaining
+        (SELECT COUNT(*) FROM customers WHERE list_id=cl.id AND status IN ('no_answer','retry','dormant')) as no_answer,
+        (SELECT COUNT(DISTINCT ca.customer_id) FROM calls ca JOIN customers c2 ON c2.id=ca.customer_id
+           WHERE c2.list_id=cl.id AND ca.result='connected') as connected,
+        (SELECT COUNT(DISTINCT ca.customer_id) FROM calls ca JOIN customers c2 ON c2.id=ca.customer_id
+           WHERE c2.list_id=cl.id AND ca.result='connected' AND ca.duration_sec>=90) as sotong
       FROM customer_lists cl WHERE cl.center_id=$1 ORDER BY cl.uploaded_at DESC`, [cid]);
 
     for (const l of lists) {
+      // DB퀄리티 3축: 도달률(데이터)·소통률(명단)·전환율(상담원)
       l.connect_rate = l.used > 0 ? +((l.connected / l.used) * 100).toFixed(1) : 0;
       l.invalid_rate = l.used > 0 ? +((l.invalid_count / l.used) * 100).toFixed(1) : 0;
+      l.reach_rate   = l.used > 0 ? +((((l.used - l.invalid_count - l.no_answer)) / l.used) * 100).toFixed(1) : 0;
+      l.sotong_rate  = l.connected > 0 ? +((l.sotong / l.connected) * 100).toFixed(1) : 0;
+      l.convert_rate = l.sotong > 0 ? +((l.positive / l.sotong) * 100).toFixed(1) : 0;
       const { rows: ag } = await query(`
         SELECT assigned_agent as agent_name,
           COUNT(*) as distributed,
@@ -315,8 +327,8 @@ function validatePhone(num) {
 }
 
 // "피드 있는(사용된) 번호" = 통화이력 보유 상태. 이게 있어야만 중복으로 인정.
-const FEED_STATUSES = ['no_answer', 'invalid', 'positive', 'done', 'recall', 'dormant', 'retry'];
-const FEED_LABEL = { no_answer: '부재', invalid: '결번', positive: '긍정', done: '통화완료', recall: '재통화', dormant: '휴면', retry: '재시도' };
+const FEED_STATUSES = ['no_answer', 'invalid', 'positive', 'reject', 'done', 'recall', 'dormant', 'retry'];
+const FEED_LABEL = { no_answer: '부재', invalid: '결번', positive: '긍정', reject: '거절', done: '통화완료', recall: '재통화', dormant: '휴면', retry: '재시도' };
 
 // 중복 판정: 같은 센터에서 "뒤 8자리"가 같은 기존 번호 중, 피드(통화이력) 있는 것을 우선 반환.
 // 피드 있는 매치가 없으면 (미사용끼리) null → 중복 아님 (biplays 규칙).
