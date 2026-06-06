@@ -300,15 +300,17 @@ app.get('/api/lists/:cid', auth, requireRole('center_admin', 'super_admin'), asy
       l.sotong_rate  = l.connected > 0 ? +((l.sotong / l.connected) * 100).toFixed(1) : 0;
       l.convert_rate = l.sotong > 0 ? +((l.positive / l.sotong) * 100).toFixed(1) : 0;
       const { rows: ag } = await query(`
-        SELECT assigned_agent as agent_name,
-          COUNT(*) as distributed,
-          COUNT(*) FILTER (WHERE status NOT IN ('pending','retry')) as used,
-          COUNT(*) FILTER (WHERE status='pending') as remaining,
-          COUNT(*) FILTER (WHERE status IN ('done','positive')) as connected,
-          COUNT(*) FILTER (WHERE status='no_answer') as no_answer,
-          COUNT(*) FILTER (WHERE status IN ('invalid','invalid_pre')) as invalid_count
-        FROM customers WHERE list_id=$1 AND assigned_agent IS NOT NULL
-        GROUP BY assigned_agent ORDER BY assigned_agent`, [l.id]);
+        SELECT c.assigned_agent as agent_name,
+          COUNT(DISTINCT c.id) as distributed,
+          COUNT(DISTINCT c.id) FILTER (WHERE c.status NOT IN ('pending','calling')) as used,
+          COUNT(DISTINCT c.id) FILTER (WHERE c.status='pending') as remaining,
+          COUNT(DISTINCT c.id) FILTER (WHERE ca.result IN ('connected','positive')) as connected,
+          COUNT(DISTINCT c.id) FILTER (WHERE c.status='no_answer') as no_answer,
+          COUNT(DISTINCT c.id) FILTER (WHERE c.status IN ('invalid','invalid_pre')) as invalid_count
+        FROM customers c
+        LEFT JOIN calls ca ON ca.customer_id = c.id
+        WHERE c.list_id=$1 AND c.assigned_agent IS NOT NULL
+        GROUP BY c.assigned_agent ORDER BY c.assigned_agent`, [l.id]);
       l.agents = ag;
     }
     res.json(lists);
@@ -666,7 +668,7 @@ app.put('/api/calls/:id/end', auth, requireRole('agent'), async (req, res) => {
 
       if (dbResult === 'connected') newStatus = 'done';
       else if (dbResult === 'positive') newStatus = 'positive';
-      else if (dbResult === 'reject') newStatus = 'done';
+      else if (dbResult === 'reject') newStatus = 'reject';
       else if (dbResult === 'invalid') newStatus = 'invalid';
       else if (dbResult === 'recall') newStatus = 'recall';
       else if (dbResult === 'no_answer') {

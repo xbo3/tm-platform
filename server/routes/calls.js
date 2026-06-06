@@ -118,6 +118,12 @@ router.put('/:id/end', auth, async (req, res) => {
     if (c.customer_id) {
       if (result === 'connected') {
         await query('UPDATE customers SET status=$1, updated_at=NOW() WHERE id=$2', ['done', c.customer_id]);
+      } else if (result === 'positive') {
+        await query('UPDATE customers SET status=$1, updated_at=NOW() WHERE id=$2', ['positive', c.customer_id]);
+      } else if (result === 'reject') {
+        await query('UPDATE customers SET status=$1, updated_at=NOW() WHERE id=$2', ['reject', c.customer_id]);
+      } else if (result === 'recall') {
+        await query('UPDATE customers SET status=$1, updated_at=NOW() WHERE id=$2', ['recall', c.customer_id]);
       } else if (result === 'no_answer') {
         // 고유 부재일수(KST 업무일 기준 COUNT DISTINCT) 계산 및 업데이트 + updated_at=NOW()
         const cust = await query(
