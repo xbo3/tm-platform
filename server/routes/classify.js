@@ -244,11 +244,18 @@ function localClassify(text, duration) {
   rejectKeywords.forEach(k => { if (t.includes(k)) rejectScore += 2; });
   recallKeywords.forEach(k => { if (t.includes(k)) recallScore += 2; });
 
+  // 3. 최우선 강한 거부 (DNC/수신거부 -> dormant)
+  const dncKeywords = ['다시는 전화', '지워주', '삭제해', '수신 거부', '스팸 등록', '차단', '전화하지 마', '번호 어떻게'];
+  let isDnc = dncKeywords.some(k => t.includes(k));
+
   if (duration < 5 && t.length < 5) {
     category = 'no_answer';
+  } else if (isDnc) {
+    category = 'dormant';
   } else if (invalidScore > 0) {
     category = 'invalid';
-  } else if (recallScore > rejectScore && recallScore > positiveScore) {
+  } else if (recallScore > 0 && (t.includes('나중에') || t.includes('이따가') || t.includes('내일') || t.includes('다음에') || t.includes('다시') || t.includes('오후'))) {
+    // 거절 키워드가 섞여 있더라도("바빠서 나중에") 시간/재콜 부사가 있으면 재콜로 분류
     category = 'recall';
     recall_at = parseRecallTime(t);
   } else if (rejectScore > positiveScore) {
@@ -489,6 +496,13 @@ export async function runClassificationInternal(call_id) {
   const final_stt_text = stt_text !== null ? stt_text : `[mock STT] duration=${dur}s — ${fallback_reason || 'fallback'}`;
 
   // 5) Persist (upsert by call_id)
+  // 상담원 수동 피드와 자동 피드의 대조 정확도 분석을 위해 manual_result를 메타데이터에 함께 기재합니다.
+  const callResultCheck = await query(
+    `SELECT result FROM calls WHERE id=$1`,
+    [call_id]
+  );
+  const manualResult = callResultCheck.rows[0]?.result || null;
+
   const analysis_meta = {
     rejection_reason,
     rejection_excerpt,
@@ -500,6 +514,7 @@ export async function runClassificationInternal(call_id) {
     summary_lines,
     key_points,
     next_action,
+    manual_result: manualResult, // 정확도 비교 분석용 데이터 기재
   };
   await query(`DELETE FROM call_classifications WHERE call_id=$1`, [call_id]);
   await query(
@@ -509,38 +524,27 @@ export async function runClassificationInternal(call_id) {
     [call_id, final_stt_text, category, confidence, recall_at, JSON.stringify(analysis_meta)]
   );
 
-  // 6) Customer status sync (상담원 수동 피드 보호 및 교차 검증)
+  // 6) Customer status sync (상담원 편의를 위해 무조건 자동 분류 결과로 기재)
   if (c.customer_id) {
-    const callResultCheck = await query(
-      `SELECT result FROM calls WHERE id=$1`,
-      [call_id]
-    );
-    const manualResult = callResultCheck.rows[0]?.result;
-    const isManualFeedDefined = ['positive', 'reject', 'recall', 'invalid', 'done'].includes(manualResult);
-
-    if (!isManualFeedDefined) {
-      if (category === 'positive') {
-        await query(`UPDATE customers SET status='positive', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
-      } else if (category === 'recall') {
-        await query(
-          `UPDATE customers SET status='recall', recall_at=$1, updated_at=NOW() WHERE id=$2`,
-          [recall_at, c.customer_id]
-        );
-      } else if (category === 'invalid') {
-        await query(`UPDATE customers SET status='invalid', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
-      } else if (category === 'dormant') {
-        await query(
-          `UPDATE customers SET status='dormant', dormant_since=NOW(), updated_at=NOW() WHERE id=$1`,
-          [c.customer_id]
-        );
-      } else if (category === 'no_answer') {
-        await query(
-          `UPDATE customers SET no_answer_count = COALESCE(no_answer_count,0)+1, updated_at=NOW() WHERE id=$1`,
-          [c.customer_id]
-        );
-      }
-    } else {
-      console.log(`[classify] Manual result '${manualResult}' wins. Automatic status skip for customer_id=${c.customer_id}`);
+    if (category === 'positive') {
+      await query(`UPDATE customers SET status='positive', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
+    } else if (category === 'recall') {
+      await query(
+        `UPDATE customers SET status='recall', recall_at=$1, updated_at=NOW() WHERE id=$2`,
+        [recall_at, c.customer_id]
+      );
+    } else if (category === 'invalid') {
+      await query(`UPDATE customers SET status='invalid', updated_at=NOW() WHERE id=$1`, [c.customer_id]);
+    } else if (category === 'dormant') {
+      await query(
+        `UPDATE customers SET status='dormant', dormant_since=NOW(), updated_at=NOW() WHERE id=$1`,
+        [c.customer_id]
+      );
+    } else if (category === 'no_answer') {
+      await query(
+        `UPDATE customers SET no_answer_count = COALESCE(no_answer_count,0)+1, updated_at=NOW() WHERE id=$1`,
+        [c.customer_id]
+      );
     }
   }
 
