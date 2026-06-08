@@ -16,7 +16,6 @@ import { auth, requireRole, generateToken } from './server/auth.js';
 import { attachWs, isDeviceOnline } from './server/ws.js';
 
 // v8 routes
-import distRouter from './server/routes/dist.js';
 import sipRouter from './server/routes/sip.js';
 import classifyRouter, { runClassificationInternal } from './server/routes/classify.js';
 import suppliersRouter from './server/routes/suppliers.js';
@@ -477,70 +476,6 @@ app.post('/api/lists/upload-file', auth, requireRole('center_admin'), upload.sin
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Customers / distribute (legacy alias kept; new code uses /api/dist/execute) ──
-app.post('/api/customers/distribute', auth, requireRole('center_admin'), async (req, res) => {
-  try {
-    const { list_id, percentage = 100 } = req.body;
-    const cid = req.user.center_id;
-    const { rows: pending } = await query(
-      `SELECT id FROM customers WHERE list_id=$1 AND assigned_agent IS NULL AND status='pending' ORDER BY id`,
-      [list_id]
-    );
-    if (!pending.length) return res.json({ ok: true, distributed: 0, message: 'No pending customers' });
-
-    const totalToDist = Math.ceil(pending.length * (percentage / 100));
-    const pool = pending.slice(0, totalToDist);
-
-    const { rows: agentsRows } = await query(
-      `SELECT agent_name FROM users WHERE center_id=$1 AND role='agent' AND agent_name IS NOT NULL ORDER BY agent_name`,
-      [cid]
-    );
-    const agents = agentsRows.map(r => r.agent_name);
-    if (!agents.length) return res.status(400).json({ error: 'No agents' });
-
-    const result = {};
-    agents.forEach(a => { result[a] = 0; });
-    pool.forEach((c, i) => {
-      const a = agents[i % agents.length];
-      result[a]++;
-    });
-
-    let idx = 0;
-    for (const a of agents) {
-      const n = result[a];
-      for (let i = 0; i < n && idx < pool.length; i++, idx++) {
-        await query(`UPDATE customers SET assigned_agent=$1, updated_at=NOW() WHERE id=$2`, [a, pool[idx].id]);
-      }
-    }
-    // 배타적 활성화: 이 센터의 기존 활성 DB 는 먼저 끈다 (항상 1개만 active).
-    await query(`UPDATE customer_lists SET is_active=false WHERE center_id=$1 AND id<>$2 AND is_active=true`, [cid, list_id]);
-    await query(`UPDATE customer_lists SET is_distributed=true, is_active=true WHERE id=$1`, [list_id]);
-    await query(
-      `INSERT INTO distribution_events (list_id, total_distributed, split_json, triggered_by) VALUES ($1, $2, $3, 'manual')`,
-      [list_id, pool.length, JSON.stringify(result)]
-    );
-
-    res.json({ ok: true, distributed: pool.length, per_agent: result, remaining: pending.length - totalToDist });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── Queue status ──
-app.get('/api/queue/status/:cid', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
-  try {
-    const cid = +req.params.cid;
-    const { rows } = await query(
-      `SELECT u.agent_name,
-        COUNT(c.id) FILTER (WHERE c.status='pending') AS pending
-        FROM users u
-        LEFT JOIN customers c ON c.assigned_agent=u.agent_name AND c.center_id=$1
-       WHERE u.center_id=$1 AND u.role='agent' AND u.agent_name IS NOT NULL
-       GROUP BY u.agent_name ORDER BY u.agent_name`,
-      [cid]
-    );
-    res.json(rows.map(r => ({ agent_name: r.agent_name, pending: +r.pending, low: +r.pending < 30 })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 // ── Agent-side ──
 app.get('/api/agent/me', auth, requireRole('agent'), async (req, res) => {
   try {
@@ -987,7 +922,6 @@ app.get('/api/test/status/:cid', auth, requireRole('center_admin', 'super_admin'
 });
 
 // ── v8 routes ──
-app.use('/api/dist', distRouter);
 app.use('/api/sip', sipRouter);
 app.use('/api/classify', classifyRouter);
 app.use('/api/suppliers', suppliersRouter);
