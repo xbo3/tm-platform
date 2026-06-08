@@ -1,41 +1,76 @@
 import { useEffect, useRef, useState } from 'react';
 import { get, post, patch, uploadFile } from '../api.js';
-import { Led, Bar, Stat, fmtTime, gradeFromRate } from '../components/widgets.jsx';
+import { Led, fmtTime, gradeFromRate } from '../components/widgets.jsx';
 
-const CATEGORY_OPTS = [
-  { v: '', label: '미분류' },
-  { v: 'casino', label: '🎰 카지노' },
-  { v: 'tojino', label: '🎲 토지노' },
-  { v: 'etc', label: '기타' },
-];
+// ManagerDashboard (센터장) — 바탕화면 "TM Platform" 디자인 이식 (biplays 6/9)
+//  좌: 상담원 일과·업무수행 (행별 라이브 성과 — 연결률 게이지 + 등급)
+//  우: DB 관리 — 연결DB 실시간 배너 + 배타적 활성화 알림 + 발급대기 + 검색 + 목록
+//  목록 버튼 = [선택]↔[연결] 한 개 (선택 누르면 연결로 바뀜, biplays 6/9)
+
+const rate = (n, d) => (d > 0 ? Math.round((n / d) * 100) : 0);
+const rateColor = (r) => (r >= 30 ? 'var(--pos)' : r >= 18 ? 'var(--text)' : 'var(--neg)');
+const agentCode = (a, i) =>
+  ((a.agent_name || '').replace(/^agent/i, '').slice(0, 2).toUpperCase()) ||
+  (a.name || '?').slice(0, 1).toUpperCase() ||
+  String(i + 1);
+
+// 연결률 게이지 (좌측 상담원 행)
+function Gauge({ r }) {
+  const col = rateColor(r);
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+        <span style={{ fontSize: 9.5, color: 'var(--text-faint)' }}>연결률</span>
+        <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: col }}>{r}%</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 4, background: 'var(--bg-elev-2)', overflow: 'hidden' }}>
+        <div style={{ width: `${Math.min(r * 2, 100)}%`, height: '100%', borderRadius: 4, background: col, transition: 'width .5s ease' }} />
+      </div>
+    </div>
+  );
+}
+
+// 연결DB 배너의 라이브 수치 한 칸
+function LiveMetric({ label, value, color = 'var(--text)', hero }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: hero ? 5 : 4 }}>
+      <span style={{ fontSize: hero ? 10 : 9.5, color: 'var(--text-faint)', letterSpacing: '0.02em', whiteSpace: 'nowrap' }}>{label}</span>
+      <span className="mono" style={{ fontSize: hero ? 30 : 16, fontWeight: hero ? 800 : 700, color, lineHeight: 1 }}>{value}</span>
+    </div>
+  );
+}
+
+// 발급 대기 티어 미니 라벨
+function TierMini({ color, label, value }) {
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+      <span style={{ width: 7, height: 7, borderRadius: 2, background: color }} />
+      <span style={{ fontSize: 10.5, fontWeight: 700, color }}>{label}</span>
+      <b className="mono">{value}</b>
+    </span>
+  );
+}
 
 export default function ManagerView({ user }) {
   const cid = user?.center_id || 1;
   const [data, setData] = useState(null);
   const [lists, setLists] = useState([]);
-  const [queue, setQueue] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
-  const [smsUnread, setSmsUnread] = useState(0);
-  // I-1: DB "1선택 → 2연결" 2단계. 선택된 DB id 보관 (한 번 누르면 선택, 그 DB 다시 누르면 연결)
-  const [selectedListId, setSelectedListId] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);   // 선택(arm)된 DB — 한 번 더 누르면 연결
   const [connecting, setConnecting] = useState(false);
-  // I-3: DB 목록 검색 + 전 컬럼 오름/내림 정렬
+  const [activation, setActivation] = useState(null);    // 배타적 활성화 알림 {title, ts}
   const [search, setSearch] = useState('');
-  const [sortKey, setSortKey] = useState('uploaded_at');
-  const [sortDir, setSortDir] = useState('desc');
   const fileRef = useRef();
 
   const refresh = async () => {
     try {
-      const [d, l, q] = await Promise.all([
+      const [d, l] = await Promise.all([
         get(`/dashboard/${cid}`),
         get(`/lists/${cid}`),
-        get(`/queue/status/${cid}`),
       ]);
       setData(d);
       setLists(l);
-      setQueue(q);
     } catch (e) { console.error(e); }
   };
 
@@ -43,20 +78,6 @@ export default function ManagerView({ user }) {
     refresh();
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
-  }, []);
-
-  // SMS 미읽음 카운트 — 30초 폴링
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const j = await get('/messages/summary');
-        if (alive) setSmsUnread(j.total_unread || 0);
-      } catch {}
-    };
-    tick();
-    const t = setInterval(tick, 30000);
-    return () => { alive = false; clearInterval(t); };
   }, []);
 
   const handleUpload = async (e) => {
@@ -79,31 +100,25 @@ export default function ManagerView({ user }) {
   };
 
   const updateList = async (id, patchBody) => {
-    // 낙관적 UI 갱신
     setLists(prev => prev.map(l => l.id === id ? { ...l, ...patchBody } : l));
     try {
       await patch(`/lists/${id}`, patchBody);
     } catch (e) {
       window.alert('갱신 실패: ' + e.message);
-      refresh(); // 서버 상태 재동기화
+      refresh();
     }
   };
 
-  const toggleActive = (l) => updateList(l.id, { is_active: !l.is_active });
+  const stop = (l) => updateList(l.id, { is_active: false });
 
-  // I-1: "1선택 → 2연결". 선택된 DB 를 한 번 더 누르면 배타적 연결(POST /admin/connect-list).
-  // 그 DB 만 is_active=true, 센터의 나머지는 모두 비활성(기록 보존). 분배 개념 폐기.
-  const handleDbAction = async (l) => {
-    if (l.is_active) return;                       // 이미 연결중이면 무시(정지는 별도 버튼)
-    if (selectedListId !== l.id) {                 // 1단계: 선택
-      setSelectedListId(l.id);
-      return;
-    }
-    // 2단계: 연결
+  // 한 개 버튼: 선택(arm) ↔ 연결(commit). 같은 행 선택 다시 누르면 해제.
+  const select = (id) => setSelectedId(prev => (prev === id ? null : id));
+  const connect = async (l) => {
     setConnecting(true);
     try {
-      await post('/admin/connect-list', { list_id: l.id });
-      setSelectedListId(null);
+      await post('/admin/connect-list', { list_id: l.id });   // 배타적 활성: 그 DB만 is_active, 나머지 off (기록 보존)
+      setActivation({ title: l.title, ts: Date.now() });
+      setSelectedId(null);
       await refresh();
     } catch (e) {
       window.alert('연결 실패: ' + e.message);
@@ -111,523 +126,222 @@ export default function ManagerView({ user }) {
     setConnecting(false);
   };
 
-  const recallList = async (l) => {
-    // 콜 친 번호는 회수 대상 아님 (status≠pending), 안 친 번호만 풀로 복귀
-    const ok = window.confirm(
-      `[${l.title}] 의 콜 안 친 번호를 회수하시겠습니까?\n` +
-      `(콜 친 번호는 그대로 보존됩니다)`
-    );
-    if (!ok) return;
-    try {
-      const r = await post('/dist/recall', { list_id: l.id });
-      window.alert(`${r.recalled}건 회수 완료`);
-      refresh();
-    } catch (e) {
-      window.alert('회수 실패: ' + e.message);
-    }
-  };
+  const agents = data?.agents || [];
+  const onlineCount = agents.filter(a => a.online).length;
 
-  const totals = data?.agents
-    ? data.agents.reduce(
-      (acc, a) => ({
-        calls: acc.calls + +a.total_calls,
-        connected: acc.connected + +a.connected,
-        positive: acc.positive + +a.positive,
-        invalid: acc.invalid + +a.invalid_count,
-        talk: acc.talk + +a.talk_time,
-        pending: acc.pending + +a.pending,
-        today_calls: acc.today_calls + (+a.today_calls || 0),
-        today_connected: acc.today_connected + (+a.today_connected || 0),
-        today_positive: acc.today_positive + (+a.today_positive || 0),
-        today_talk: acc.today_talk + (+a.today_talk_time || 0),
-        y_calls: acc.y_calls + (+a.yesterday_calls || 0),
-        y_connected: acc.y_connected + (+a.yesterday_connected || 0),
-        y_positive: acc.y_positive + (+a.yesterday_positive || 0),
-      }),
-      { calls: 0, connected: 0, positive: 0, invalid: 0, talk: 0, pending: 0,
-        today_calls: 0, today_connected: 0, today_positive: 0, today_talk: 0,
-        y_calls: 0, y_connected: 0, y_positive: 0 }
-    )
-    : { calls: 0, connected: 0, positive: 0, invalid: 0, talk: 0, pending: 0,
-        today_calls: 0, today_connected: 0, today_positive: 0, today_talk: 0,
-        y_calls: 0, y_connected: 0, y_positive: 0 };
+  // 팀 요약 (오늘 기준)
+  const team = agents.reduce(
+    (a, s) => ({
+      calls: a.calls + (+s.today_calls || 0),
+      connected: a.connected + (+s.today_connected || 0),
+      positive: a.positive + (+s.today_positive || 0),
+      talk: a.talk + (+s.today_talk_time || 0),
+    }),
+    { calls: 0, connected: 0, positive: 0, talk: 0 }
+  );
+  const teamRate = rate(team.connected, team.calls);
 
-  const overallRate = totals.calls > 0 ? +((totals.connected / totals.calls) * 100).toFixed(1) : 0;
-  const todayRate = totals.today_calls > 0 ? +((totals.today_connected / totals.today_calls) * 100).toFixed(1) : 0;
-  const totalRemaining = lists.reduce((s, l) => s + +l.remaining, 0);
-
-  // I-2: 현재 연결중(배타적 활성)인 DB — 대시보드 상단 배너2 에 표시
   const activeList = lists.find(l => l.is_active) || null;
 
-  // I-3: DB 목록 필드 정의 + 검색/정렬. SORT_FIELDS = 정렬 가능한 모든 컬럼.
-  const SORT_FIELDS = [
-    { k: 'uploaded_at', label: '업로드일', num: false },
-    { k: 'title', label: '타이틀', num: false },
-    { k: 'supplier_tg', label: '판매자', num: false },
-    { k: 'total', label: '전체', num: true },
-    { k: 'used', label: '사용', num: true },
-    { k: 'remaining', label: '잔여', num: true },
-    { k: 'connected', label: '연결', num: true },
-    { k: 'sotong', label: '소통', num: true },
-    { k: 'positive', label: '긍정', num: true },
-    { k: 'reject', label: '거절', num: true },
-    { k: 'no_answer', label: '부재', num: true },
-    { k: 'invalid_count', label: '결번', num: true },
-    { k: 'quality', label: '퀄리티', num: true },
-    { k: 'reach_rate', label: '도달률', num: true },
-    { k: 'sotong_rate', label: '소통률', num: true },
-    { k: 'convert_rate', label: '전환율', num: true },
-  ];
-  const sortedLists = (() => {
-    const q = search.trim().toLowerCase();
-    const filtered = q
-      ? lists.filter(l =>
-          (l.title || '').toLowerCase().includes(q) ||
-          (l.supplier_tg || '').toLowerCase().includes(q))
-      : lists;
-    const field = SORT_FIELDS.find(f => f.k === sortKey) || SORT_FIELDS[0];
-    const dir = sortDir === 'asc' ? 1 : -1;
-    return [...filtered].sort((a, b) => {
-      let av = a[field.k], bv = b[field.k];
-      if (field.num) { av = +av || 0; bv = +bv || 0; return (av - bv) * dir; }
-      if (field.k === 'uploaded_at') { av = new Date(av).getTime() || 0; bv = new Date(bv).getTime() || 0; return (av - bv) * dir; }
-      return String(av || '').localeCompare(String(bv || ''), 'ko') * dir;
-    });
-  })();
-
-  const delta = (today, y) => {
-    if (!y) return null;
-    const d = today - y;
-    if (d === 0) return null;
-    return { sign: d > 0 ? '+' : '', val: d, pct: y > 0 ? Math.round((d / y) * 100) : null };
-  };
-
-  // 표 헤더 클릭 정렬 (같은 컬럼 다시 누르면 오름/내림 토글)
-  const sortBy = (k) => {
-    if (sortKey === k) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortKey(k); setSortDir('desc'); }
-  };
-  // DB 목록 = 가로 한 줄 표 (biplays 6/6). 헤더 클릭 = 정렬.
-  const DBCOLS = [
-    { k: 'title', label: '타이틀', align: 'left' },
-    { k: 'supplier_tg', label: '판매자', align: 'left' },
-    { k: 'used', label: '사용', align: 'right' },
-    { k: 'remaining', label: '잔여', align: 'right' },
-    { k: 'connected', label: '연결', align: 'right' },
-    { k: 'sotong', label: '소통', align: 'right' },
-    { k: 'reject', label: '거절', align: 'right' },
-    { k: 'no_answer', label: '부재', align: 'right' },
-    { k: 'invalid_count', label: '결번', align: 'right' },
-    { k: 'quality', label: '퀄리티', align: 'right' },
-    { k: 'uploaded_at', label: '등록일', align: 'right' },
-  ];
-  const cellBtn = (bg, bd, col) => ({ padding: '4px 9px', marginLeft: 4, fontSize: 10, fontWeight: 600, borderRadius: 4, cursor: 'pointer', background: bg, border: `1px solid ${bd}`, color: col, whiteSpace: 'nowrap' });
+  // 검색 (디비명 · 입수날짜 · 판매상)
+  const ql = search.trim().toLowerCase();
+  const visible = ql
+    ? lists.filter(l =>
+        (l.title || '').toLowerCase().includes(ql) ||
+        String(l.uploaded_at || '').includes(ql) ||
+        (l.supplier_tg || '').toLowerCase().includes(ql))
+    : lists;
 
   return (
-    <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start', maxWidth: 1320, margin: '0 auto' }}>
+      <style>{`
+        @keyframes tmSpin { to { transform: rotate(360deg); } }
+        @keyframes tmIn { from { opacity:0; transform:translateY(-6px);} to {opacity:1; transform:none;} }
+        .tm-spin{ display:inline-block; animation:tmSpin 1.1s linear infinite;}
+        .tm-in{ animation:tmIn .35s ease both;}
+      `}</style>
 
-      {/* HERO 2분할 — 좌 상담원 성과 / 우 DB 품질. 5/26 biplays "어렵고 복잡하지 않게" — gradient/pulse 톤다운, 핵심 수치만. */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 18 }}>
-
-        {/* 좌 — 당일 성과 (상담원 성적 합계) */}
-        <div className="card" style={{
-          padding: '18px 22px',
-          minHeight: 180,
-          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-        }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-dim)', fontWeight: 600 }}>
-                당일 성과
-                {smsUnread > 0 && (
-                  <span style={{
-                    marginLeft: 10, padding: '2px 8px', borderRadius: 10,
-                    background: 'var(--neg)', color: '#fff', fontSize: 10, fontWeight: 600,
-                  }}>
-                    📩 미읽음 SMS {smsUnread}
-                  </span>
-                )}
-              </span>
-              <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-                {new Date().toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit', weekday: 'short' })}
-              </span>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
-              <span className="mono" style={{ fontSize: 38, fontWeight: 700, color: 'var(--text)', lineHeight: 1 }}>{totals.today_calls}</span>
-              <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>총 콜</span>
-              {(() => {
-                const d = delta(totals.today_calls, totals.y_calls);
-                if (!d) return null;
-                return <span style={{ fontSize: 11, color: d.val > 0 ? 'var(--pos)' : 'var(--neg)', marginLeft: 'auto' }}>
-                  {d.sign}{d.val} vs 전일
-                </span>;
-              })()}
-            </div>
+      {/* LEFT — 상담원 일과 · 업무수행 */}
+      <div className="card" style={{ padding: 0 }}>
+        <div style={{ padding: '14px 16px 12px', borderBottom: '1px solid var(--border-soft)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>상담원 일과 · 업무수행</div>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{onlineCount}/{agents.length} 온라인</div>
           </div>
-
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
-            paddingTop: 10, borderTop: '1px solid var(--border-soft)',
-            fontSize: 12, color: 'var(--text-dim)',
-          }}>
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 2 }}>연결</div>
-              <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: 'var(--pos)' }}>{totals.today_connected}</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 2 }}>긍정</div>
-              <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: 'var(--accent)' }}>{totals.today_positive}</div>
-            </div>
-            <div>
-              <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 2 }}>연결률</div>
-              <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: todayRate > 30 ? 'var(--pos)' : 'var(--text)' }}>{todayRate}%</div>
-            </div>
+          <div style={{ display: 'flex', gap: 18, marginTop: 8 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>팀 콜 <b className="mono" style={{ color: 'var(--text)' }}>{team.calls.toLocaleString()}</b></span>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>팀 연결률 <b className="mono" style={{ color: rateColor(teamRate) }}>{teamRate}%</b></span>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>팀 긍정 <b className="mono" style={{ color: 'var(--accent)' }}>{team.positive}</b></span>
           </div>
         </div>
 
-        {/* 우 — DB 품질 실시간 소화 */}
-        <div className="card" style={{
-          padding: '18px 22px',
-          minHeight: 180,
-          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-        }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <span style={{ fontSize: 12, color: 'var(--text-dim)', fontWeight: 600 }}>DB 품질 실시간 소화</span>
-              <span className="mono" style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-                총 {lists.reduce((s, l) => s + +l.total, 0).toLocaleString()}건 · 잔여 {totalRemaining.toLocaleString()}건
-              </span>
-            </div>
-
-            {/* I-2: 현재 연결중인 DB 배너 (배너2) — 타이틀 + 판매상 + 실시간 기록 강조 (biplays 6/6) */}
-            <div style={{
-              marginBottom: 12, padding: '12px 14px', borderRadius: 8,
-              background: activeList ? 'rgba(34,197,94,.08)' : 'var(--bg-soft, rgba(255,255,255,.03))',
-              border: `1px solid ${activeList ? 'var(--pos)' : 'var(--border-soft)'}`,
-            }}>
-              {activeList ? (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 9 }}>
-                    <Led color="var(--pos)" size={10} pulse />
-                    <span style={{ fontSize: 11, color: 'var(--pos)', fontWeight: 700 }}>연결 중</span>
-                    <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--text)' }}>{activeList.title}</span>
-                    {activeList.supplier_tg && (
-                      <span className="mono" style={{ fontSize: 11, color: 'var(--info)' }}>판매상 {activeList.supplier_tg}</span>
-                    )}
-                    <span className="mono" style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-dim)' }}>
-                      잔여 <strong style={{ color: 'var(--accent)', fontSize: 16 }}>{activeList.remaining}</strong>
-                    </span>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {agents.map((a, i) => {
+            const tr = rate(+a.today_connected || 0, +a.today_calls || 0);
+            const cumRate = rate(+a.connected || 0, +a.total_calls || 0);
+            const isCalling = a.online && a.phone_status === 'calling';
+            const statusCol = !a.online ? 'var(--text-faint)' : isCalling ? 'var(--info)' : 'var(--pos)';
+            const g = gradeFromRate(cumRate);
+            const col = rateColor(tr);
+            return (
+              <div key={a.agent_name || i} style={{ display: 'grid', gridTemplateColumns: '34px 1fr 132px 60px', gap: 12, alignItems: 'center', padding: '13px 16px', borderBottom: '1px solid var(--border-soft)', opacity: a.online ? 1 : 0.5 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 9, background: a.online ? col + '1c' : 'var(--bg-elev-2)', color: a.online ? col : 'var(--text-faint)', fontWeight: 800, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{agentCode(a, i)}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <span style={{ fontWeight: 700, fontSize: 13.5, whiteSpace: 'nowrap' }}>{a.name}</span>
+                    <Led color={statusCol} size={8} pulse={isCalling} />
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-                    {[
-                      ['연결', activeList.connected ?? 0, 'var(--pos)'],
-                      ['소통', activeList.sotong ?? 0, 'var(--accent)'],
-                      ['긍정', activeList.positive ?? 0, 'var(--accent-strong)'],
-                      ['거절', activeList.reject ?? 0, 'var(--text-dim)'],
-                    ].map(([lab, val, col]) => (
-                      <div key={lab} style={{ textAlign: 'center', padding: '5px 0', background: 'rgba(255,255,255,.03)', borderRadius: 5 }}>
-                        <div style={{ fontSize: 9, color: 'var(--text-faint)', marginBottom: 1 }}>{lab}</div>
-                        <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: col, lineHeight: 1 }}>{val}</div>
-                      </div>
-                    ))}
+                  <div style={{ fontSize: 10.5, color: 'var(--text-faint)', marginTop: 2 }}>
+                    {isCalling ? <span style={{ color: 'var(--pos)', fontWeight: 600 }}>통화중</span> : !a.online ? '오프라인' : '대기중'}
+                    <span className="mono"> · 콜 {+a.today_calls || 0} · 긍정 <span style={{ color: 'var(--accent)' }}>{+a.today_positive || 0}</span></span>
                   </div>
-                </>
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Led color="var(--text-faint)" size={9} />
-                  <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>연결된 DB 없음 — 아래 목록에서 <strong>선택 → 연결</strong></span>
                 </div>
-              )}
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>활성 DB</div>
-                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--text)', lineHeight: 1 }}>{lists.filter(l => l.is_active).length}</div>
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>연결</div>
-                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--pos)', lineHeight: 1 }}>{totals.connected}</div>
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>긍정</div>
-                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--accent)', lineHeight: 1 }}>{totals.positive}</div>
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>결번</div>
-                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--neg)', lineHeight: 1 }}>{totals.invalid}</div>
-              </div>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 10, color: 'var(--text-faint)', marginBottom: 3 }}>긍정률</div>
-                <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: 'var(--accent-strong)', lineHeight: 1 }}>
-                  {totals.calls > 0 ? +(totals.positive / totals.calls * 100).toFixed(1) : 0}%
+                <Gauge r={tr} />
+                <div style={{ textAlign: 'right' }}>
+                  <span className="tag" style={{ background: g.color + '22', color: g.color, borderColor: g.color + '33' }}>{g.grade}</span>
                 </div>
               </div>
-            </div>
-          </div>
-          <div style={{
-            paddingTop: 14, borderTop: '1px solid var(--border-soft)',
-            fontSize: 11, color: 'var(--text-dim)',
-            display: 'flex', justifyContent: 'space-between',
-          }}>
-            <span>📌 새 DB 업로드 시 사용한 번호 자동 중복 체크 — 중복 상세 표시</span>
-            <span className="mono">{lists.length} DB 보유</span>
-          </div>
-        </div>
-      </div>
-
-      {/* MAIN: 좌 실장 / 우 DB */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-
-        {/* LEFT — 실장 성적 */}
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>실장별 성적</span>
-            <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>오늘 / 누적 / 등급</span>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th style={{ width: 24 }}>#</th>
-                <th>실장</th>
-                <th colSpan={3} style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-faint)', borderRight: '1px solid var(--border-soft)' }}>오늘</th>
-                <th colSpan={2} style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-faint)' }}>누적</th>
-                <th style={{ textAlign: 'right' }}>등급</th>
-              </tr>
-              <tr style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                <th></th>
-                <th></th>
-                <th style={{ textAlign: 'right' }}>콜</th>
-                <th style={{ textAlign: 'right' }}>연결률</th>
-                <th style={{ textAlign: 'right', borderRight: '1px solid var(--border-soft)' }}>긍정률</th>
-                <th style={{ textAlign: 'right' }}>콜</th>
-                <th style={{ textAlign: 'right' }}>가동</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data?.agents || []).map((a, i) => {
-                const todayCalls = +a.today_calls || 0;
-                const todayConn  = +a.today_connected || 0;
-                const todayPos   = +a.today_positive || 0;
-                const todayRate  = todayCalls > 0 ? +((todayConn / todayCalls) * 100).toFixed(1) : 0;
-                const todayPosRate = todayCalls > 0 ? +((todayPos / todayCalls) * 100).toFixed(1) : 0;
-                const cumRate    = +a.total_calls > 0 ? +((+a.connected / +a.total_calls) * 100).toFixed(1) : 0;
-                const g = gradeFromRate(cumRate);
-                return (
-                  <tr key={a.agent_name}>
-                    <td className="mono dim">{i + 1}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontWeight: 600 }}>{a.name}</span>
-                        {a.online ? (
-                          a.phone_status === 'calling' ? (
-                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--neg)', fontWeight: 600 }}>
-                              <Led color="var(--neg)" size={8} pulse /> 통화 중
-                            </span>
-                          ) : (
-                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--pos)', fontWeight: 600 }}>
-                              <Led color="var(--pos)" size={8} /> 대기 중
-                            </span>
-                          )
-                        ) : (
-                          <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-faint)' }}>
-                            <Led color="var(--text-faint)" size={8} /> 오프라인
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 10, color: 'var(--text-faint)' }} className="mono">{a.agent_name} · {a.sip_account || '-'}</div>
-                    </td>
-                    <td className="mono" style={{ textAlign: 'right' }}>{todayCalls}</td>
-                    <td className="mono" style={{ textAlign: 'right', color: todayRate > 30 ? 'var(--pos)' : 'var(--text)' }}>{todayRate}%</td>
-                    <td className="mono" style={{ textAlign: 'right', color: 'var(--accent)', borderRight: '1px solid var(--border-soft)' }}>{todayPosRate}%</td>
-                    <td className="mono" style={{ textAlign: 'right' }}>{a.total_calls}</td>
-                    <td className="mono" style={{ textAlign: 'right', color: 'var(--text-dim)' }}>{fmtTime(+a.talk_time || 0)}</td>
-                    <td style={{ textAlign: 'right' }}>
-                      <span className="tag" style={{ background: g.color + '22', color: g.color }}>{g.grade}</span>
-                    </td>
-                  </tr>
-                );
-              })}
-              {(!data?.agents || data.agents.length === 0) && (
-                <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 20 }}>로딩중…</td></tr>
-              )}
-            </tbody>
-          </table>
-
-          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-soft)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 6 }}>실장별 큐 잔여</div>
-            {queue.map(q => (
-              <div key={q.agent_name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <span className="mono" style={{ width: 22, fontSize: 11 }}>{q.agent_name}</span>
-                <div style={{ flex: 1 }}>
-                  <Bar pct={Math.min(q.pending / 2, 100)} color={q.low ? 'var(--neg)' : 'var(--info)'} h={4} />
-                </div>
-                <span className="mono" style={{ fontSize: 12, width: 40, textAlign: 'right', color: q.low ? 'var(--neg)' : 'var(--text)' }}>{q.pending}</span>
-                {q.low && <span className="tag neg" style={{ fontSize: 9 }}>LOW</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* RIGHT — DB 목록 */}
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>DB 목록 ({sortedLists.length}{search ? `/${lists.length}` : ''})</span>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleUpload} style={{ display: 'none' }} />
-              <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
-                {uploading ? '업로드중…' : '+ DB 업로드'}
-              </button>
-            </div>
-          </div>
-
-          {/* I-3: 검색 (정렬은 아래 표 헤더 클릭) — biplays 6/6 */}
-          <div style={{ marginBottom: 10 }}>
-            <input
-              placeholder="🔍 타이틀·판매자 검색  ·  정렬은 표 헤더 클릭"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{ width: '100%', fontSize: 11, padding: '7px 10px', boxSizing: 'border-box' }}
-            />
-          </div>
-
-          {uploadResult && (
-            <div className="card elev" style={{ marginBottom: 10, padding: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>업로드 결과</span>
-                <button onClick={() => setUploadResult(null)} style={{ background:'none', border:'none', color:'var(--text-dim)', cursor:'pointer', fontSize:11 }}>닫기</button>
-              </div>
-              <div style={{ display: 'flex', gap: 12, fontSize: 12, marginBottom: 6 }}>
-                <span>전체 <strong className="mono">{uploadResult.total}</strong></span>
-                <span style={{ color: 'var(--pos)' }}>유효 <strong className="mono">{uploadResult.valid}</strong></span>
-                <span style={{ color: 'var(--neg)' }}>오류 <strong className="mono">{uploadResult.invalid_phone}</strong></span>
-                <span style={{ color: 'var(--warn)' }}>중복 <strong className="mono">{uploadResult.duplicate}</strong></span>
-                <span style={{ color: 'var(--info)' }}>품질 <strong className="mono">{uploadResult.quality}%</strong></span>
-              </div>
-
-              {/* 5/26 biplays spec — 어느 DB 에 몇 건 중복인지 집계 + 상세 detail */}
-              {uploadResult.duplicate > 0 && uploadResult.dup_by_list?.length > 0 && (
-                <div style={{ marginTop: 6, padding: 8, background: 'rgba(251,191,36,.06)', borderRadius: 6, borderLeft: '3px solid var(--warn)' }}>
-                  <div style={{ fontSize: 11, color: 'var(--warn)', fontWeight: 700, marginBottom: 4 }}>중복 발견 — 어느 DB 에 몇 건</div>
-                  {uploadResult.dup_by_list.map((d, i) => (
-                    <div key={i} style={{ fontSize: 11, color: 'var(--text)', marginBottom: 2 }}>
-                      <span style={{ color: 'var(--text-dim)' }}>·</span> {d.list} <strong className="mono">{d.count}건</strong>
-                      {d.connected > 0 && <span style={{ color: 'var(--pos)', marginLeft: 6 }}>연결 {d.connected}</span>}
-                      {d.no_answer > 0 && <span style={{ color: 'var(--warn)', marginLeft: 6 }}>부재 {d.no_answer}</span>}
-                      {d.invalid > 0 && <span style={{ color: 'var(--neg)', marginLeft: 6 }}>오류 {d.invalid}</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* 상세 — 처음 20건 phone/name/prev_list */}
-              {uploadResult.duplicate > 0 && uploadResult.dup_details?.length > 0 && (
-                <details style={{ marginTop: 6, fontSize: 11 }}>
-                  <summary style={{ cursor: 'pointer', color: 'var(--text-dim)' }}>중복 상세 ({Math.min(uploadResult.dup_details.length, 20)}건 보기)</summary>
-                  <div style={{ marginTop: 4, maxHeight: 180, overflowY: 'auto', fontFamily: 'var(--mono)', fontSize: 10 }}>
-                    {uploadResult.dup_details.slice(0, 20).map((d, i) => (
-                      <div key={i} style={{ padding: '3px 0', borderBottom: '1px dashed var(--border-soft)' }}>
-                        <span style={{ color: 'var(--info)' }}>{d.phone}</span>
-                        {d.name && <span style={{ color: 'var(--text)' }}> {d.name}</span>}
-                        <span style={{ color: 'var(--text-dim)' }}> · {d.prev_list}</span>
-                        {(d.feed || d.prev_status) && <span style={{ color: 'var(--warn)' }}> [{d.feed || d.prev_status}]</span>}
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
-            </div>
-          )}
-
-          {lists.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-dim)' }}>DB 없음</div>}
-          {lists.length > 0 && sortedLists.length === 0 && <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-dim)' }}>검색 결과 없음</div>}
-
-          {/* DB 목록 = 가로 한 줄 표 (biplays 6/6). 헤더 클릭 = 정렬. */}
-          {sortedLists.length > 0 && (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-                <thead>
-                  <tr style={{ color: 'var(--text-faint)', fontSize: 10 }}>
-                    {DBCOLS.map(c => (
-                      <th key={c.k} onClick={() => sortBy(c.k)} title="클릭 = 정렬"
-                        style={{ textAlign: c.align, padding: '4px 6px', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}>
-                        {c.label}{sortKey === c.k ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
-                      </th>
-                    ))}
-                    <th style={{ textAlign: 'right', padding: '4px 6px' }}>동작</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedLists.map(l => (
-                    <tr key={l.id} style={{ borderTop: '1px solid var(--border-soft)', background: l.is_active ? 'rgba(34,197,94,.07)' : 'transparent' }}>
-                      {/* 타이틀 (+ 카테고리 소형 select) */}
-                      <td style={{ padding: '5px 6px', whiteSpace: 'nowrap' }}>
-                        {l.is_active && <Led color="var(--pos)" size={7} pulse />}
-                        <span style={{ fontWeight: 600, marginLeft: l.is_active ? 5 : 0 }}>{l.title}</span>
-                        {l.is_test && <span className="tag warn" style={{ marginLeft: 4 }}>T</span>}
-                        <select value={l.category || ''} onChange={e => updateList(l.id, { category: e.target.value || null })}
-                          title="카테고리"
-                          style={{ marginLeft: 6, fontSize: 10, padding: '1px 2px', background: 'transparent', border: '1px solid var(--border-soft)', borderRadius: 3, color: 'var(--text-dim)' }}>
-                          {CATEGORY_OPTS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
-                        </select>
-                      </td>
-                      {/* 판매자 — 인라인 편집 */}
-                      <td style={{ padding: '4px 6px' }}>
-                        <input value={l.supplier_tg || ''} placeholder="@판매자"
-                          onChange={e => updateList(l.id, { supplier_tg: e.target.value })}
-                          onBlur={e => updateList(l.id, { supplier_tg: e.target.value })}
-                          className="mono"
-                          style={{ width: 82, fontSize: 10, padding: '3px 5px', color: 'var(--info)', background: 'transparent', border: '1px solid var(--border-soft)', borderRadius: 4 }} />
-                      </td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--info)' }}>{l.used}</td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: +l.remaining < 30 ? 'var(--neg)' : 'var(--text)', fontWeight: 600 }}>{l.remaining}</td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--pos)' }}>{l.connected ?? 0}</td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--accent)' }}>{l.sotong ?? 0}</td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-dim)' }}>{l.reject ?? 0}</td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-dim)' }}>{l.no_answer ?? 0}</td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--neg)' }}>{l.invalid_count ?? 0}</td>
-                      <td className="mono" title="DB 퀄리티 = 도달률×0.4 + 소통률×0.6 (0~100). 미측정=—"
-                        style={{ textAlign: 'right', padding: '5px 6px', fontWeight: 700,
-                          color: l.quality == null ? 'var(--text-faint)' : (l.quality >= 60 ? 'var(--pos)' : l.quality >= 35 ? 'var(--accent)' : 'var(--neg)') }}>
-                        {l.quality == null ? '—' : l.quality}
-                      </td>
-                      <td className="mono" style={{ textAlign: 'right', padding: '5px 6px', color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
-                        {new Date(l.uploaded_at).toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' })}
-                      </td>
-                      {/* 동작 — 오토 + 선택/연결(교체) + 회수 */}
-                      <td style={{ textAlign: 'right', padding: '4px 6px', whiteSpace: 'nowrap' }}>
-                        <label title="오토연결 (자동 다음 DB)" style={{ marginRight: 6, fontSize: 9, color: 'var(--text-faint)', cursor: 'pointer' }}>
-                          <input type="checkbox" checked={!!l.auto_connect} onChange={e => updateList(l.id, { auto_connect: e.target.checked })} style={{ verticalAlign: 'middle', marginRight: 2 }} />오토
-                        </label>
-                        {l.is_active ? (
-                          <button onClick={() => toggleActive(l)} title="연결 정지 (기록 보존)" style={cellBtn('var(--pos)', 'var(--pos)', '#fff')}>● 연결중·정지</button>
-                        ) : selectedListId === l.id ? (
-                          <>
-                            <button onClick={() => handleDbAction(l)} disabled={connecting} title="연결 (배타적 활성, 현재 연결DB와 교체)" style={cellBtn('var(--accent)', 'var(--accent)', '#fff')}>{connecting ? '연결중…' : '② 연결'}</button>
-                            <button onClick={() => setSelectedListId(null)} title="취소" style={cellBtn('transparent', 'var(--border)', 'var(--text-faint)')}>취소</button>
-                          </>
-                        ) : (
-                          <button onClick={() => handleDbAction(l)} title="① 선택 (한 번 더 = 연결)" style={cellBtn('transparent', 'var(--accent)', 'var(--accent)')}>① 선택</button>
-                        )}
-                        <button onClick={() => recallList(l)} title="안 친 번호 회수" style={cellBtn('transparent', 'var(--border)', 'var(--text-dim)')}>회수</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            );
+          })}
+          {agents.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 24, color: 'var(--text-faint)', fontSize: 12 }}>상담원 로딩중…</div>
           )}
         </div>
       </div>
 
-      {/* 잔여 + 소진 예상 */}
-      <div className="card" style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center' }}>
-        <Stat label="총 잔여" value={totalRemaining.toLocaleString()} color="var(--accent)" />
-        <Stat label="활성 DB" value={lists.filter(l => l.is_active).length} color="var(--pos)" />
-        <Stat label="오늘 통화시간" value={fmtTime(totals.talk)} color="var(--info)" />
-        <Stat label="긍정 누적" value={totals.positive} color="var(--accent)" />
+      {/* RIGHT — DB 관리 */}
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>DB 관리</span>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleUpload} style={{ display: 'none' }} />
+          <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
+            {uploading ? '업로드중…' : '+ DB 업로드'}
+          </button>
+        </div>
+
+        {/* 연결DB 실시간 소켓 */}
+        {activeList ? (
+          <div style={{ padding: '15px 18px', borderRadius: 10, background: 'var(--pos-soft)', border: '1px solid rgba(22,163,74,0.3)', marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 14, flexWrap: 'wrap' }}>
+              <Led color="var(--pos)" size={9} pulse />
+              <span style={{ fontSize: 11, color: 'var(--pos)', fontWeight: 700, letterSpacing: '0.02em' }}>연결 중 · 실시간</span>
+              <span style={{ fontSize: 17, fontWeight: 700, whiteSpace: 'nowrap' }}>{activeList.title}</span>
+              <span className="mono" style={{ fontSize: 11.5, color: +activeList.remaining < 300 ? 'var(--neg)' : 'var(--text-dim)' }}>잔여 {(+activeList.remaining || 0).toLocaleString()}건</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 22, flexWrap: 'wrap' }}>
+              <LiveMetric label="당일 총 콜수" value={team.calls.toLocaleString()} hero />
+              <LiveMetric label="통화시간" value={fmtTime(team.talk)} color="var(--text-dim)" />
+              <LiveMetric label="연결" value={activeList.connected ?? 0} color="var(--pos)" />
+              <LiveMetric label="부재" value={activeList.no_answer ?? 0} color="var(--warn)" />
+              <LiveMetric label="긍정" value={activeList.positive ?? 0} color="var(--accent)" />
+              <LiveMetric label="거절" value={activeList.reject ?? 0} color="var(--text-dim)" />
+            </div>
+            <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 12 }}>
+              {activeList.supplier_tg || '판매상 미지정'} · 입수 {new Date(activeList.uploaded_at).toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' })} · 전화기 {onlineCount}대 가동
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', borderRadius: 10, background: 'var(--bg-elev-2)', border: '1px solid var(--border-soft)', marginBottom: 14 }}>
+            <Led color="var(--text-faint)" size={9} />
+            <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>연결된 DB 없음 — 아래에서 <strong>선택 → 연결</strong></span>
+          </div>
+        )}
+
+        {/* 배타적 활성화 알림 */}
+        {activation && (
+          <div key={activation.ts} className="tm-in" style={{ padding: '11px 14px', borderRadius: 10, marginBottom: 14, background: 'var(--info-soft)', border: '1px solid rgba(37,99,235,0.28)', display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+            <span className="tm-spin" style={{ fontSize: 13, marginTop: 1 }}>🔄</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--info)', marginBottom: 3 }}>배타적 활성화 — {activation.title} 전환됨</div>
+              <div style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>이제 모든 상담원의 <b>다음 통화</b>는 이 DB에서만 발급됩니다. 기존 DB는 발급 중단·잠금(보존).</div>
+            </div>
+            <button onClick={() => setActivation(null)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--text-faint)', fontSize: 14, lineHeight: 1, padding: 2 }}>×</button>
+          </div>
+        )}
+
+        {/* 발급 대기 strip */}
+        {activeList && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '9px 14px', borderRadius: 9, background: 'var(--bg-elev-2)', border: '1px solid var(--border-soft)', marginBottom: 14, fontSize: 11, flexWrap: 'wrap' }}>
+            <span style={{ color: 'var(--text-faint)' }}>발급 대기</span>
+            <TierMini color="var(--warn)" label="이월" value={activeList.no_answer ?? 0} />
+            <TierMini color="var(--purple)" label="재콜" value={activeList.recall ?? 0} />
+            <TierMini color="var(--info)" label="선착순" value={activeList.remaining ?? 0} />
+            <span style={{ marginLeft: 'auto', color: 'var(--text-faint)' }}>부재 우선 → 재콜 → 선착순</span>
+          </div>
+        )}
+
+        {/* 업로드 결과 (있을 때만) */}
+        {uploadResult && (
+          <div className="card elev" style={{ marginBottom: 12, padding: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>업로드 결과</span>
+              <button onClick={() => setUploadResult(null)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 11 }}>닫기</button>
+            </div>
+            <div style={{ display: 'flex', gap: 12, fontSize: 12, flexWrap: 'wrap' }}>
+              <span>전체 <strong className="mono">{uploadResult.total}</strong></span>
+              <span style={{ color: 'var(--pos)' }}>유효 <strong className="mono">{uploadResult.valid}</strong></span>
+              <span style={{ color: 'var(--neg)' }}>오류 <strong className="mono">{uploadResult.invalid_phone}</strong></span>
+              <span style={{ color: 'var(--warn)' }}>중복 <strong className="mono">{uploadResult.duplicate}</strong></span>
+              <span style={{ color: 'var(--info)' }}>품질 <strong className="mono">{uploadResult.quality}%</strong></span>
+            </div>
+          </div>
+        )}
+
+        {/* 검색 */}
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 디비명 · 입수날짜 · 판매상 검색"
+          style={{ width: '100%', fontSize: 12, padding: '8px 12px', marginBottom: 10 }} />
+
+        {/* 목록 */}
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {lists.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-faint)', fontSize: 12 }}>DB 없음 — 업로드하세요</div>
+          )}
+          {lists.length > 0 && visible.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-faint)', fontSize: 12 }}>검색 결과 없음</div>
+          )}
+          {visible.map(l => {
+            const isSel = selectedId === l.id;
+            return (
+              <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 12px', borderBottom: '1px solid var(--border-soft)', background: l.is_active ? 'var(--pos-soft)' : isSel ? 'var(--accent-soft)' : 'transparent', borderRadius: l.is_active || isSel ? 8 : 0 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{l.title}</span>
+                    {l.is_test && <span className="tag warn">TEST</span>}
+                  </div>
+                  <div className="mono" style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>{l.supplier_tg || '—'}</div>
+                </div>
+                <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontSize: 9, color: 'var(--text-faint)' }}>입수</div>
+                  <div className="mono" style={{ fontSize: 12, color: 'var(--text)' }}>
+                    {new Date(l.uploaded_at).toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' })}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  {l.is_active ? (
+                    <>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, color: 'var(--pos)', whiteSpace: 'nowrap' }}>
+                        <Led color="var(--pos)" size={7} pulse /> 연결 중
+                      </span>
+                      <button className="btn ghost" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => stop(l)}>정지</button>
+                    </>
+                  ) : isSel ? (
+                    <button className="btn primary" style={{ padding: '6px 14px', fontSize: 12 }} disabled={connecting} onClick={() => connect(l)}>
+                      {connecting ? '연결중…' : '연결'}
+                    </button>
+                  ) : (
+                    <button className="btn" style={{ padding: '6px 14px', fontSize: 12 }} onClick={() => select(l.id)}>선택</button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {activeList && selectedId && selectedId !== activeList.id && (
+          <div style={{ marginTop: 10, fontSize: 11, color: 'var(--text-dim)', textAlign: 'center' }}>
+            연결 시 <strong style={{ color: 'var(--text)' }}>{activeList.title}</strong> 발급 중단 · 새 DB로 배타적 전환됩니다.
+          </div>
+        )}
       </div>
     </div>
   );
