@@ -320,6 +320,28 @@ app.get('/api/lists/:cid', auth, requireRole('center_admin', 'super_admin'), asy
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PATCH /api/lists/:id — DB 메타 수정(정지/이름/판매상/카테고리). dist.js 삭제(6/9)로 유실됐던 라우트 복구.
+// 화이트리스트 필드만. is_active=false 면 그 DB 발급 정지(연결 해제, 기록 보존).
+app.patch('/api/lists/:id', auth, requireRole('center_admin', 'super_admin'), async (req, res) => {
+  try {
+    const id = +req.params.id;
+    const allowed = ['is_active', 'title', 'supplier_tg', 'category', 'is_test'];
+    const sets = [];
+    const vals = [];
+    for (const k of allowed) {
+      if (k in req.body) { vals.push(req.body[k]); sets.push(`${k}=$${vals.length}`); }
+    }
+    if (!sets.length) return res.status(400).json({ error: 'no_fields' });
+    vals.push(id);
+    const { rows } = await query(
+      `UPDATE customer_lists SET ${sets.join(', ')} WHERE id=$${vals.length} RETURNING id, is_active, title`,
+      vals
+    );
+    if (!rows.length) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true, list: rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Phone validation + duplicate check ──
 function validatePhone(num) {
   if (!num) return { valid: false, reason: 'empty' };

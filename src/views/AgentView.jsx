@@ -586,7 +586,7 @@ export default function AgentView({ user }) {
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', marginBottom: 2 }}>오토콜</div>
               <div style={{ fontSize: 10, color: 'var(--text-faint)' }}>
-                통화 종료 후 10~30초 랜덤 자동 다음 콜
+                상담 완료 후 5초 뒤 자동 다음 콜 · 결번은 즉시
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
