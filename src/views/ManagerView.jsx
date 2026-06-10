@@ -168,10 +168,24 @@ export default function ManagerView({ user }) {
             <div style={{ fontSize: 14, fontWeight: 700 }}>상담원 일과 · 업무수행</div>
             <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>{onlineCount}/{agents.length} 온라인</div>
           </div>
-          <div style={{ display: 'flex', gap: 18, marginTop: 8 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>팀 콜 <b className="mono" style={{ color: 'var(--text)' }}>{team.calls.toLocaleString()}</b></span>
-            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>팀 연결률 <b className="mono" style={{ color: rateColor(teamRate) }}>{teamRate}%</b></span>
-            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>팀 긍정 <b className="mono" style={{ color: 'var(--accent)' }}>{team.positive}</b></span>
+        </div>
+
+        {/* 팀 가동 실시간 히어로 배너 — 우측 연결DB 배너와 대칭 (biplays 6/10 "좌측 상담원 히어로 영역에도") */}
+        <div style={{ margin: '14px 16px', padding: '15px 18px', borderRadius: 10, background: 'var(--info-soft)', border: '1px solid rgba(37,99,235,0.28)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 14, flexWrap: 'wrap' }}>
+            <Led color="var(--info)" size={9} pulse={onlineCount > 0} />
+            <span style={{ fontSize: 11, color: 'var(--info)', fontWeight: 700, letterSpacing: '0.02em' }}>팀 가동 · 실시간</span>
+            <span style={{ fontSize: 17, fontWeight: 700, whiteSpace: 'nowrap' }}>{onlineCount}대 가동중</span>
+            <span className="mono" style={{ fontSize: 11.5, color: rateColor(teamRate) }}>연결률 {teamRate}%</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 22, flexWrap: 'wrap' }}>
+            <LiveMetric label="당일 총 콜수" value={team.calls.toLocaleString()} color="var(--info)" hero />
+            <LiveMetric label="통화시간" value={fmtTime(team.talk)} color="var(--text-dim)" />
+            <LiveMetric label="연결" value={team.connected} color="var(--pos)" />
+            <LiveMetric label="긍정" value={team.positive} color="var(--accent)" />
+          </div>
+          <div className="mono" style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 12 }}>
+            온라인 {onlineCount}명 / 총 {agents.length}명 · 팀 연결률 {teamRate}%
           </div>
         </div>
 
