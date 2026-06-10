@@ -298,6 +298,28 @@ export default function ManagerView({ user }) {
               <span style={{ color: 'var(--warn)' }}>중복 <strong className="mono">{uploadResult.duplicate}</strong></span>
               <span style={{ color: 'var(--info)' }}>품질 <strong className="mono">{uploadResult.quality}%</strong></span>
             </div>
+
+            {/* 감지된 열 매핑 (몇 번째 열을 무엇으로 읽었는지) */}
+            {uploadResult.detected_columns && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border-soft)', fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.7 }}>
+                <div>
+                  감지된 열 — <b style={{ color: 'var(--info)' }}>전화</b>「{uploadResult.detected_columns.phone}」
+                  {uploadResult.detected_columns.name && <> · <b>이름</b>「{uploadResult.detected_columns.name}」</>}
+                  {uploadResult.detected_columns.region && <> · <b>지역</b>「{uploadResult.detected_columns.region}」</>}
+                </div>
+                <div className="mono" style={{ color: 'var(--text-faint)', marginTop: 2, wordBreak: 'break-all' }}>
+                  열 순서: {(uploadResult.detected_columns.all || []).map((c, i) => `${i + 1}.${c}`).join(' · ')}
+                </div>
+              </div>
+            )}
+
+            {/* 중복 출처 분석 (어느 이전 DB와 겹쳤는지) */}
+            {uploadResult.dup_by_list?.length > 0 && (
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border-soft)', fontSize: 11, color: 'var(--text-dim)' }}>
+                <span style={{ color: 'var(--warn)', fontWeight: 700 }}>중복 출처</span>{' '}
+                {uploadResult.dup_by_list.map(d => `${d.list}(${d.count})`).join(' · ')}
+              </div>
+            )}
           </div>
         )}
 
