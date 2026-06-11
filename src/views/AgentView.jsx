@@ -157,11 +157,18 @@ export default function AgentView({ user }) {
   const { connected: wsConnected, deviceOnline, sendDial, sendManualDial, addListener } = useConsoleWs({ onEvent: onWsEvent });
   const wsBus = { addListener };
 
+  // 010 휴대폰: 중간4+끝4 = 8자리만 입력하면 010 자동 prepend (* # 없는 순수 8자리일 때만)
+  const normalizeDial = (raw) => {
+    const d = (raw || '').replace(/[^0-9*#]/g, '');
+    return /^\d{8}$/.test(d) ? '010' + d : d;
+  };
+  const dialPreview = normalizeDial(dialInput);
+
   const dialManual = () => {
     setWsErr(null);
     if (!wsConnected) { window.alert('서버 연결 끊김 — 재연결 시도 중'); return; }
     if (!deviceOnline) { window.alert('폰이 오프라인 상태입니다'); return; }
-    const digits = dialInput.replace(/[^0-9*#]/g, '');
+    const digits = normalizeDial(dialInput);
     if (digits.length < 3) { window.alert('번호를 3자리 이상 입력하세요'); return; }
     cancelAutoCall();
     setCallState('ringing');
@@ -640,7 +647,7 @@ export default function AgentView({ user }) {
               <input
                 value={dialInput}
                 onChange={e => setDialInput(e.target.value.replace(/[^0-9*#]/g, '').slice(0, 20))}
-                placeholder="010-XXXX-XXXX"
+                placeholder="8자리만 (010 자동)"
                 className="mono"
                 style={{
                   flex: 1, fontSize: 16, letterSpacing: '0.05em',
@@ -655,6 +662,12 @@ export default function AgentView({ user }) {
                 borderRadius: 4, color: 'var(--text-dim)', cursor: 'pointer',
               }}>⌫</button>
             </div>
+
+            {dialPreview !== dialInput.replace(/[^0-9*#]/g, '') && (
+              <div className="mono" style={{ fontSize: 12, color: 'var(--pos)', textAlign: 'center', marginBottom: 10 }}>
+                → {dialPreview.replace(/^(\d{3})(\d{4})(\d{4})$/, '$1-$2-$3')}
+              </div>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 10 }}>
               {['1','2','3','4','5','6','7','8','9','*','0','#'].map(k => (
