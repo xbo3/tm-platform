@@ -96,9 +96,9 @@ router.get('/', auth, async (req, res) => {
     let sql = 'SELECT c.*, cl.title as list_title FROM customers c LEFT JOIN customer_lists cl ON c.list_id=cl.id WHERE c.center_id=$1';
     const params = [cid];
     let pi = 2;
-    // ⭐ Agent isolation: agent 는 자기 assigned_agent 큐만 조회 가능
+    // ⭐ Agent isolation: agent 는 자기 assigned_agent 큐 + 활성 DB의 공용 pending 건 조회 가능 (FCFS 공유풀 대응)
     if (role === 'agent') {
-      sql += ` AND c.assigned_agent=$${pi++}`;
+      sql += ` AND (c.assigned_agent=$${pi++} OR (c.status='pending' AND cl.is_active=true))`;
       params.push(req.user.agent_name);
     } else if (agent) {
       // 비-agent 역할만 agent 필터로 다른 사람 큐 조회 가능
